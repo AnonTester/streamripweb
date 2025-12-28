@@ -136,24 +136,34 @@ class ProgressTap:
 
     def finish_job(self, job_id: str):
         self.job_totals.pop(job_id, None)
+        self.latest_progress.pop(job_id, None)
         logger.info("Progress tracking finished for job %s", job_id)
 
     def _patched_get_progress(self, enabled: bool, total: int, desc: str):
         handle = self.original_get_progress(enabled, total, desc)
         job_id = self.current_job.get()
-        track_ctx = self.current_track.get()
         started = time.monotonic()
         state = self.job_totals.setdefault(
             job_id or "unknown",
             {"tracks": {}, "started_at": started},
         )
-        track_id = track_ctx.get("track_id") if track_ctx else desc
+        initial_track_ctx = self.current_track.get()
+        track_id = initial_track_ctx.get("track_id") if initial_track_ctx else desc
 
         def _update_totals(increment: int):
+            # Track context may change while the download is in flight (e.g., retries).
+            # Always pull the latest context so the UI stays in sync.
+            track_ctx = self.current_track.get() or initial_track_ctx
             track_state = state["tracks"].setdefault(
                 track_id,
-                {"received": 0, "total": total, "title": desc},
+                {
+                    "received": 0,
+                    "total": total,
+                    "title": desc,
+                    "started_at": time.monotonic(),
+                },
             )
+            track_state["started_at"] = track_state.get("started_at") or time.monotonic()
             track_state["total"] = total
             track_state["received"] = min(
                 track_state["received"] + increment, total
@@ -161,9 +171,21 @@ class ProgressTap:
             received_sum = sum(t["received"] for t in state["tracks"].values())
             total_sum = sum(t["total"] for t in state["tracks"].values()) or total
             elapsed = max(time.monotonic() - state["started_at"], 0.0001)
-            rate = received_sum / elapsed
+            overall_rate = received_sum / elapsed
+            track_elapsed = max(
+                time.monotonic() - track_state.get("started_at", state["started_at"]),
+                0.0001,
+            )
+            track_rate = track_state["received"] / track_elapsed
             eta_total = (
-                (total_sum - received_sum) / rate if rate > 0 else None
+                (total_sum - received_sum) / overall_rate
+                if overall_rate > 0
+                else None
+            )
+            per_track_eta = (
+                (total - track_state["received"]) / track_rate
+                if track_rate > 0
+                else None
             )
             event_data = {
                 "job_id": job_id,
@@ -172,9 +194,7 @@ class ProgressTap:
                     "desc": desc,
                     "received": track_state["received"],
                     "total": total,
-                    "eta": (total - track_state["received"]) / rate
-                    if rate > 0
-                    else None,
+                    "eta": per_track_eta,
                 },
                 "overall": {
                     "received": received_sum,
@@ -191,8 +211,8 @@ class ProgressTap:
                 track_id,
                 track_state["received"],
                 total,
-                event_data["progress"]["eta"],
-                event_data["overall"]["eta"],
+                per_track_eta,
+                eta_total,
             )
             asyncio.create_task(
                 self.broker.publish(
