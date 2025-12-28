@@ -5,11 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Streamrip Web</title>
   <link rel="stylesheet" href="/static/style.css?v={{ app_version }}">
+  <link rel="icon" type="image/png" href="/static/favicon.png">
 </head>
 <body>
   <header class="header">
     <div>
-      <h1>Streamrip Web</h1>
+        <h1><img src="/static/logo.png" width="32" height="32" border="0"> Streamrip Web</h1>
       <p class="subtitle">Full-featured web UI for the streamrip module</p>
     </div>
   </header>
@@ -97,9 +98,9 @@
               <thead>
                 <tr>
                   <th></th>
-                  <th>Artist</th>
+                  <th class="col-artist">Artist</th>
                   <th>Title</th>
-                  <th>Year</th>
+                  <th class="col-year">Year</th>
                   <th>Type</th>
                   <th>Tracks</th>
                   <th>Explicit</th>

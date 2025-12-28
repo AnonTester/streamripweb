@@ -169,11 +169,17 @@ input:focus, select:focus, button:focus {
 .btn.danger { background: var(--danger); color: var(--accent-contrast); }
 
 .search-form { display: flex; flex-direction: column; gap: 10px; }
-.search-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.search-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 .query-row { display: flex; flex-direction: column; gap: 6px; }
 .query-label { font-weight: 600; color: var(--muted); }
 .query-input { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
 .query-input input { width: 100%; }
+
+@media (max-width: 640px) {
+  .search-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 
 .results-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .selection-group, .action-group { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -207,6 +213,16 @@ th, td {
   text-align: left;
   border-bottom: 1px solid var(--border);
 }
+
+#results-table .col-artist {
+  min-width: 180px;
+  width: clamp(160px, 22%, 280px);
+}
+
+#results-table .col-year.is-hidden-col {
+  display: none;
+}
+
 
 th { color: var(--muted); font-weight: 700; }
 

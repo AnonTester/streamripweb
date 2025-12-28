@@ -20,6 +20,7 @@ const state = {
   appSettings: { ...(window.initialAppSettings || {}), ...loadAppPrefs() },
   lastQuery: '',
   hasSearched: false,
+  currentSource: '',
 };
 
 const tabs = document.querySelectorAll('.tab');
@@ -83,6 +84,13 @@ function updateResultsWithHistory() {
   return changed;
 }
 
+function updateYearColumnVisibility() {
+  const hideYear = state.currentSource === 'deezer';
+  document.querySelectorAll('.col-year').forEach((cell) => {
+    cell.classList.toggle('is-hidden-col', hideYear);
+  });
+}
+
 function renderResults(results) {
   updateResultsWithHistory();
   const tbody = document.querySelector('#results-table tbody');
@@ -106,6 +114,9 @@ function renderResults(results) {
       ? `No results found for "${state.lastQuery}".`
       : '';
   }
+  if (hasResults && searchLoadingBanner && !searchLoadingBanner.classList.contains('hidden')) {
+    searchLoadingBanner.classList.add('hidden');
+  }
   results.forEach((row, idx) => {
     const tr = document.createElement('tr');
     const isDownloaded = Boolean(row.downloaded);
@@ -116,9 +127,9 @@ function renderResults(results) {
     const downloadedPill = isDownloaded ? '<span class="pill pill-downloaded">Downloaded</span>' : '';
     tr.innerHTML = `
       <td><input type="checkbox" data-index="${idx}" data-downloaded="${isDownloaded}" title="${isDownloaded ? 'Select again if desired' : 'Select for download'}"></td>
-      <td>${artist}</td>
+      <td class="col-artist">${artist}</td>
       <td>${row.title || row.summary} ${downloadedPill}</td>
-      <td>${row.year || ''}</td>
+      <td class="col-year">${row.year || ''}</td>
       <td>${row.album_type || row.media_type || ''}</td>
       <td>${row.tracks || ''}</td>
       <td>${row.explicit ? '⚠️' : ''}</td>
@@ -126,6 +137,7 @@ function renderResults(results) {
     `;
     tbody.appendChild(tr);
   });
+  updateYearColumnVisibility();
   updateDownloadVisibility();
 }
 
@@ -182,9 +194,20 @@ function applyDefaultSource() {
   if (state.appSettings.defaultSource && sourceSelect) {
     sourceSelect.value = state.appSettings.defaultSource;
   }
+  if (sourceSelect) {
+    state.currentSource = sourceSelect.value;
+    updateYearColumnVisibility();
+  }
 }
 
 applyDefaultSource();
+
+if (sourceSelect) {
+  sourceSelect.addEventListener('change', () => {
+    state.currentSource = sourceSelect.value;
+    updateYearColumnVisibility();
+  });
+}
 
 function setSearchLoading(isLoading, message = 'Fetching results…') {
   if (!searchLoadingBanner) return;
@@ -205,6 +228,8 @@ searchForm.addEventListener('submit', async (ev) => {
   const formData = new FormData(searchForm);
   const payload = Object.fromEntries(formData.entries());
   payload.limit = Number(payload.limit || 25);
+  state.currentSource = payload.source || sourceSelect?.value || state.currentSource;
+  updateYearColumnVisibility();
   state.lastQuery = payload.query;
   state.hasSearched = true;
   setSearchLoading(true);
