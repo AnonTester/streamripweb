@@ -319,6 +319,19 @@ class DownloadManager:
     def has_downloaded(self, source: str, item_id: str | int) -> bool:
         return (source, str(item_id)) in self.downloaded_index
 
+    def history_snapshot(self) -> list[dict]:
+        return self.history_store.list()
+
+    def queue_state(self) -> dict[str, Any]:
+        return self._queue_payload()
+
+    def _queue_payload(self) -> dict[str, Any]:
+        return {
+            "queue": self.snapshot(),
+            "progress": self.progress_tap.snapshot(),
+            "history": self.history_snapshot(),
+        }
+
     def _record_download(self, item: QueueItem):
         key = (item.source, str(item.item_id))
         if key in self.downloaded_index:
@@ -374,7 +387,7 @@ class DownloadManager:
                     item.title,
                 )
             await self.event_broker.publish(
-                {"event": "queue", "data": self.snapshot(), "progress": self.progress_tap.snapshot()}
+                {"event": "queue", "data": self._queue_payload()}
             )
             if self.worker is None or self.worker.done():
                 self.worker = asyncio.create_task(self._worker())
@@ -396,7 +409,7 @@ class DownloadManager:
             async with self.lock:
                 self.order.pop(0)
                 await self.event_broker.publish(
-                    {"event": "queue", "data": self.snapshot(), "progress": self.progress_tap.snapshot()}
+                    {"event": "queue", "data": self._queue_payload()}
                 )
 
     async def _process_item(self, item: QueueItem):
@@ -404,7 +417,7 @@ class DownloadManager:
         item.error = None
         self.progress_tap.start_job(item.job_id)
         await self.event_broker.publish(
-            {"event": "queue", "data": self.snapshot(), "progress": self.progress_tap.snapshot()}
+            {"event": "queue", "data": self._queue_payload()}
         )
         backoff = 1.0
         logger.info(
@@ -434,8 +447,7 @@ class DownloadManager:
                 await self.event_broker.publish(
                     {
                         "event": "queue",
-                        "data": self.snapshot(),
-                        "progress": self.progress_tap.snapshot(),
+                        "data": self._queue_payload(),
                     }
                 )
                 self.progress_tap.finish_job(item.job_id)
@@ -452,8 +464,7 @@ class DownloadManager:
                 await self.event_broker.publish(
                     {
                         "event": "queue",
-                        "data": self.snapshot(),
-                        "progress": self.progress_tap.snapshot(),
+                        "data": self._queue_payload(),
                         "meta": {"message": "retrying", "backoff": backoff},
                     }
                 )
@@ -465,7 +476,7 @@ class DownloadManager:
         self.progress_tap.finish_job(item.job_id)
         logger.error("Job failed after retries | job_id=%s error=%s", item.job_id, item.error)
         await self.event_broker.publish(
-            {"event": "queue", "data": self.snapshot(), "progress": self.progress_tap.snapshot()}
+            {"event": "queue", "data": self._queue_payload()}
         )
 
     async def _run_streamrip(self, item: QueueItem):
@@ -526,7 +537,7 @@ class DownloadManager:
             if self.worker is None or self.worker.done():
                 self.worker = asyncio.create_task(self._worker())
         await self.event_broker.publish(
-            {"event": "queue", "data": self.snapshot(), "progress": self.progress_tap.snapshot()}
+            {"event": "queue", "data": self._queue_payload()}
         )
 
     async def abort(self, job_id: str):
@@ -536,7 +547,7 @@ class DownloadManager:
         item.status = "aborted"
         logger.warning("Aborted job %s", job_id)
         await self.event_broker.publish(
-            {"event": "queue", "data": self.snapshot()}
+            {"event": "queue", "data": self._queue_payload()}
         )
 
     async def download_saved(self, entries: list[dict] | None = None):

@@ -16,6 +16,7 @@ const state = {
   saved: window.initialSaved || [],
   config: window.initialConfig || {},
   progress: {},
+  history: window.initialHistory || [],
   appSettings: { ...(window.initialAppSettings || {}), ...loadAppPrefs() },
   lastQuery: '',
   hasSearched: false,
@@ -65,7 +66,25 @@ function markResultDownloadedByQueueItem(item) {
   return changed;
 }
 
+function updateResultsWithHistory() {
+  if (!state.history?.length) return false;
+  const historySet = new Set(
+    state.history.map((entry) => `${entry.source}:${String(entry.id)}`),
+  );
+  let changed = false;
+  state.results = state.results.map((res) => {
+    const key = `${res.source}:${String(res.id)}`;
+    if (historySet.has(key) && !res.downloaded) {
+      changed = true;
+      return { ...res, downloaded: true };
+    }
+    return res;
+  });
+  return changed;
+}
+
 function renderResults(results) {
+  updateResultsWithHistory();
   const tbody = document.querySelector('#results-table tbody');
   const actions = document.querySelector('.results-actions');
   const selectionGroup = document.querySelector('.selection-group');
@@ -191,6 +210,7 @@ searchForm.addEventListener('submit', async (ev) => {
   });
   const data = await res.json();
   state.results = data.results || [];
+  updateResultsWithHistory();
   renderResults(state.results);
   toast(`Loaded ${state.results.length} results`);
 });
@@ -242,11 +262,14 @@ function buildQueueRow(item) {
   return div;
 }
 
-function renderQueue(queue, progressMap) {
+function renderQueue(queue, progressMap, history) {
   const prevQueue = state.queue || [];
   const incomingQueue = queue || state.queue;
   if (progressMap) {
     state.progress = progressMap;
+  }
+  if (history) {
+    state.history = history;
   }
   state.queue = incomingQueue;
   if (state.queue.length) {
@@ -274,7 +297,8 @@ function renderQueue(queue, progressMap) {
     list.appendChild(buildQueueRow(normalizedItem));
   });
   document.getElementById('view-queue').hidden = state.queue.length === 0;
-  if (resultsUpdated) {
+  const historyUpdated = updateResultsWithHistory();
+  if (resultsUpdated || historyUpdated) {
     renderResults(state.results);
   }
   if (queue && prevQueue.length > 0 && state.queue.length === 0) {
@@ -409,7 +433,7 @@ document.getElementById('download-btn').addEventListener('click', async () => {
     body: JSON.stringify({ items: selected }),
   });
   const data = await res.json();
-  renderQueue(data.queue);
+  renderQueue(data.queue, data.progress, data.history);
   resultsPanel.classList.add('hidden');
   queuePanel.classList.remove('hidden');
 });
@@ -473,7 +497,7 @@ async function refreshQueue() {
   try {
     const res = await fetch('/api/queue');
     const data = await res.json();
-    renderQueue(data.queue || [], data.progress);
+    renderQueue(data.queue || [], data.progress, data.history);
   } catch (err) {
     console.error('Failed to refresh queue', err);
   }
@@ -542,23 +566,27 @@ function connectSSE() {
   const source = new EventSource('/events/downloads');
 
   source.addEventListener('queue', (event) => {
-    const data = JSON.parse(event.data);
-    renderQueue(data, data.progress);
-    const ids = new Set((data || []).map((item) => item.job_id));
+    const payload = JSON.parse(event.data);
+    const data = payload.data || payload.queue || payload;
+    renderQueue(data.queue || data, data.progress, data.history);
+    const queueItems = data.queue || data;
+    const ids = new Set((queueItems || []).map((item) => item.job_id));
     Object.keys(state.progress).forEach((jobId) => {
       if (!ids.has(jobId)) delete state.progress[jobId];
     });
   });
 
   source.addEventListener('progress', (event) => {
-    const data = JSON.parse(event.data);
+    const payload = JSON.parse(event.data);
+    const data = payload.data || payload;
     state.progress[data.job_id] = { overall: data.overall, track: data.track, progress: data.progress };
     state.queue = state.queue.map((item) => (item.job_id === data.job_id ? { ...item, status: item.status === 'completed' ? item.status : 'in_progress' } : item));
-    renderQueue(state.queue);
+    renderQueue(state.queue, state.progress, state.history);
   });
 
   source.addEventListener('saved', (event) => {
-    const data = JSON.parse(event.data);
+    const payload = JSON.parse(event.data);
+    const data = payload.data || payload;
     renderSaved(data);
   });
 

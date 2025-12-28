@@ -18,16 +18,19 @@ from .download_manager import DownloadManager
 try:  # Prefer sse-starlette if available for nicer handling
     from sse_starlette.sse import EventSourceResponse
 
-    def sse_response(generator):
-        return EventSourceResponse(generator)
-
+    SSE_STARLETTE_AVAILABLE = True
 except Exception:  # pragma: no cover - fallback to StreamingResponse
+    EventSourceResponse = None
+    SSE_STARLETTE_AVAILABLE = False
 
-    def sse_response(generator):
-        return StreamingResponse(generator, media_type="text/event-stream")
+
+def sse_response(generator, *, formatted: bool = False):
+    if SSE_STARLETTE_AVAILABLE and EventSourceResponse is not None and not formatted:
+        return EventSourceResponse(generator)
+    return StreamingResponse(generator, media_type="text/event-stream")
 
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.1"
 APP_REPO = os.getenv("STREAMRIP_WEB_REPO", "AnonTester/streamripweb")
 STREAMRIP_REPO = os.getenv("STREAMRIP_REPO", "nathom/streamrip")
 data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
@@ -74,6 +77,7 @@ async def index(request: Request):
             "request": request,
             "config": config_snapshot,
             "saved": download_manager.saved_items(),
+            "history": download_manager.history_snapshot(),
             "versions": version_data,
             "app_settings": app.state.app_settings,
             "app_version": APP_VERSION,
@@ -85,9 +89,15 @@ async def index(request: Request):
 async def download_events():
     async def event_generator():
         async for event in download_manager.event_broker.subscribe():
-            yield format_sse(event)
+            name = event.get("event", "message")
+            payload = {k: v for k, v in event.items() if k != "event"}
+            data = json.dumps(payload)
+            if SSE_STARLETTE_AVAILABLE:
+                yield {"event": name, "data": data}
+            else:
+                yield format_sse({"event": name, "data": payload})
 
-    return sse_response(event_generator())
+    return sse_response(event_generator(), formatted=not SSE_STARLETTE_AVAILABLE)
 
 
 @app.get("/api/config")
@@ -119,21 +129,21 @@ async def update_app_settings(payload: Dict[str, Any]):
 @app.get("/api/queue")
 async def queue_state():
     logger.debug("Queue state requested")
-    return {"queue": download_manager.snapshot(), "progress": download_manager.progress_tap.snapshot()}
+    return download_manager.queue_state()
 
 
 @app.post("/api/queue/{job_id}/retry")
 async def retry_job(job_id: str):
     logger.info("Retry requested for job %s", job_id)
     await download_manager.retry(job_id)
-    return {"queue": download_manager.snapshot()}
+    return download_manager.queue_state()
 
 
 @app.post("/api/queue/{job_id}/abort")
 async def abort_job(job_id: str):
     logger.warning("Abort requested for job %s", job_id)
     await download_manager.abort(job_id)
-    return {"queue": download_manager.snapshot()}
+    return download_manager.queue_state()
 
 
 @app.post("/api/queue/{job_id}/save")
@@ -167,7 +177,7 @@ async def download_saved(payload: Dict[str, Any] | None = None):
     entries = payload.get("items") if payload else None
     logger.info("Download saved requested | entries=%s", (entries or "all"))
     await download_manager.download_saved(entries)
-    return {"queue": download_manager.snapshot()}
+    return download_manager.queue_state()
 
 
 @app.post("/api/search")
@@ -242,7 +252,7 @@ async def start_download(payload: Dict[str, Any]):
         raise HTTPException(status_code=400, detail="items must be a list")
     logger.info("Download requested for %d item(s)", len(items))
     queue = await download_manager.enqueue(items)
-    return {"queue": queue}
+    return download_manager.queue_state()
 
 
 @app.get("/api/version")
@@ -371,7 +381,8 @@ def summarize_item(
 def format_sse(event: Dict[str, Any]) -> str:
     data = event.get("data", {})
     name = event.get("event", "message")
-    payload = f"event: {name}\ndata: {json.dumps(data)}\n\n"
+    data_str = data if isinstance(data, str) else json.dumps(data)
+    payload = f"event: {name}\ndata: {data_str}\n\n"
     return payload
 
 
