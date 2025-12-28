@@ -132,7 +132,7 @@ main {
 
 label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; color: var(--muted); }
 
-input, select {
+input, select, textarea {
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -140,7 +140,14 @@ input, select {
   color: var(--text);
 }
 
-input:focus, select:focus, button:focus {
+textarea {
+  width: 100%;
+  min-height: 140px;
+  resize: vertical;
+  font-family: inherit;
+}
+
+input:focus, select:focus, textarea:focus, button:focus {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

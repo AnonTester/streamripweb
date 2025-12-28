@@ -38,6 +38,7 @@ class QueueItem:
     item_id: str
     title: str
     artist: str | None = None
+    url: str | None = None
     status: str = "queued"
     attempts: int = 0
     error: str | None = None
@@ -365,6 +366,7 @@ class DownloadManager:
                     "media_type": item.media_type,
                     "title": item.title,
                     "artist": item.artist,
+                    "url": item.url,
                 }
             ]
         )
@@ -377,6 +379,7 @@ class DownloadManager:
             "item_id": item.item_id,
             "title": item.title,
             "artist": item.artist,
+            "url": item.url,
             "status": item.status,
             "attempts": item.attempts,
             "error": item.error,
@@ -514,12 +517,28 @@ class DownloadManager:
             item.item_id,
         )
         async with Main(config) as main:
-            await main.add_all_by_id(
-                [(item.source, item.media_type, item.item_id)]
-            )
+            if item.media_type == "url" or item.source == "url":
+                await main.add_all([item.url or item.item_id])
+            else:
+                await main.add_all_by_id(
+                    [(item.source, item.media_type, item.item_id)]
+                )
             logger.debug("Resolved items for job %s; beginning rip", item.job_id)
             await main.resolve()
             await main.rip()
+
+    async def enqueue_urls(self, urls: list[str]):
+        entries = [
+            {
+                "source": "url",
+                "media_type": "url",
+                "id": url,
+                "title": url,
+                "url": url,
+            }
+            for url in urls
+        ]
+        return await self.enqueue(entries)
 
     async def save_for_later(self, job_id: str | None = None, payload: dict | None = None):
         if payload:
@@ -541,6 +560,7 @@ class DownloadManager:
                         "media_type": item.media_type,
                         "title": item.title,
                         "artist": item.artist,
+                        "url": item.url,
                     }
                 ]
             )

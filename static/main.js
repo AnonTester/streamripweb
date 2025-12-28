@@ -21,6 +21,9 @@ const state = {
   lastQuery: '',
   hasSearched: false,
   currentSource: '',
+  activeTab: 'search',
+  queueContext: 'search',
+  activeQueueJobIds: new Set(),
 };
 
 const tabs = document.querySelectorAll('.tab');
@@ -31,6 +34,7 @@ tabs.forEach((tab) => {
     tab.classList.add('active');
     const target = document.getElementById(`tab-${tab.dataset.tab}`);
     target.classList.add('active');
+    state.activeTab = tab.dataset.tab;
   });
 });
 
@@ -189,6 +193,9 @@ const sourceSelect = searchForm.querySelector('select[name="source"]');
 const searchLoadingBanner = document.getElementById('search-loading');
 const searchLoadingText = document.getElementById('search-loading-text');
 const searchSubmitBtn = searchForm.querySelector('button[type="submit"]');
+const urlInput = document.getElementById('url-input');
+const urlDownloadBtn = document.getElementById('url-download-btn');
+const urlQueueCard = document.getElementById('url-queue-card');
 
 function applyDefaultSource() {
   if (state.appSettings.defaultSource && sourceSelect) {
@@ -315,16 +322,11 @@ function renderQueue(queue, progressMap, history) {
   if (state.queue.length) {
     document.getElementById('results-card')?.classList.remove('hidden');
   }
-  const list = document.getElementById('queue-list');
-  list.innerHTML = '';
+  const queueLists = document.querySelectorAll('[data-queue-list]');
+  queueLists.forEach((list) => {
+    list.innerHTML = '';
+  });
   let resultsUpdated = false;
-  if (!state.queue.length && prevQueue.length) {
-    prevQueue.forEach((item) => {
-      if (item.status === 'completed') {
-        resultsUpdated = markResultDownloadedByQueueItem(item) || resultsUpdated;
-      }
-    });
-  }
   state.queue.forEach((item) => {
     const progress = state.progress[item.job_id];
     const status = progress && item.status !== 'completed' && item.status !== 'failed'
@@ -334,24 +336,16 @@ function renderQueue(queue, progressMap, history) {
     if (status === 'completed') {
       resultsUpdated = markResultDownloadedByQueueItem(normalizedItem) || resultsUpdated;
     }
-    list.appendChild(buildQueueRow(normalizedItem));
+    queueLists.forEach((list) => {
+      list.appendChild(buildQueueRow(normalizedItem));
+    });
   });
   document.getElementById('view-queue').hidden = state.queue.length === 0;
   const historyUpdated = updateResultsWithHistory();
   if (resultsUpdated || historyUpdated) {
     renderResults(state.results);
   }
-  if (queue && prevQueue.length > 0 && state.queue.length === 0) {
-    const hadFailure = prevQueue.some((item) => ['failed', 'aborted', 'retrying'].includes(item.status));
-    if (!hadFailure) {
-      toast('All downloads completed successfully');
-      const queuePanelEl = document.getElementById('queue-panel');
-      const resultsPanelEl = document.getElementById('results-panel');
-      queuePanelEl?.classList.add('hidden');
-      resultsPanelEl?.classList.remove('hidden');
-      renderResults(state.results);
-    }
-  }
+  handleQueueCompletion(prevQueue);
 }
 
 function renderSaved(saved) {
@@ -476,12 +470,16 @@ document.getElementById('download-btn').addEventListener('click', async () => {
   const selected = Array.from(document.querySelectorAll('#results-table tbody input[type="checkbox"]:checked'))
     .map((box) => state.results[Number(box.dataset.index)]);
   if (!selected.length) return;
+  const previousIds = new Set(state.queue.map((item) => item.job_id));
   const res = await fetch('/api/downloads', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ items: selected }),
   });
   const data = await res.json();
+  const newIds = (data.queue || []).map((item) => item.job_id).filter((id) => !previousIds.has(id));
+  state.activeQueueJobIds = new Set(newIds);
+  state.queueContext = 'search';
   renderQueue(data.queue, data.progress, data.history);
   resultsPanel.classList.add('hidden');
   queuePanel.classList.remove('hidden');
@@ -498,12 +496,13 @@ viewQueueBtn.addEventListener('click', () => {
   queuePanel.classList.remove('hidden');
 });
 
-const queueList = document.getElementById('queue-list');
-queueList.addEventListener('click', async (ev) => {
-  const action = ev.target.dataset.action;
-  const jobId = ev.target.dataset.id;
-  if (!action || !jobId) return;
-  await fetch(`/api/queue/${jobId}/${action}`, { method: 'POST' });
+document.querySelectorAll('[data-queue-list]').forEach((queueList) => {
+  queueList.addEventListener('click', async (ev) => {
+    const action = ev.target.dataset.action;
+    const jobId = ev.target.dataset.id;
+    if (!action || !jobId) return;
+    await fetch(`/api/queue/${jobId}/${action}`, { method: 'POST' });
+  });
 });
 
 const savedList = document.getElementById('saved-list');
@@ -533,6 +532,8 @@ savedList.addEventListener('click', async (ev) => {
 
 document.getElementById('download-saved').addEventListener('click', async () => {
   await fetch('/api/saved/download', { method: 'POST' });
+  state.activeQueueJobIds = new Set();
+  state.queueContext = state.activeTab;
   toast('Queued all saved items');
 });
 
@@ -614,6 +615,80 @@ document.getElementById('save-app-settings').addEventListener('click', async () 
   toast('App settings saved');
 });
 
+function handleQueueCompletion(prevQueue) {
+  const queueMap = new Map(state.queue.map((item) => [item.job_id, item]));
+  const activeJobs = Array.from(state.activeQueueJobIds || []);
+  const activeStatuses = activeJobs.map((id) => queueMap.get(id)?.status || 'completed');
+  const activeHasFailure = activeStatuses.some((status) => ['failed', 'aborted', 'retrying'].includes(status));
+  const activeAllDone = activeJobs.length > 0 && activeStatuses.every((status) => status === 'completed');
+
+  if (state.queueContext === 'url') {
+    if (state.queue.length && activeJobs.length) {
+      urlQueueCard?.classList.remove('hidden');
+    }
+    if (activeAllDone && !activeHasFailure) {
+      toast('All URL downloads completed successfully');
+      if (urlInput) {
+        urlInput.value = '';
+      }
+      if (urlDownloadBtn) {
+        urlDownloadBtn.disabled = true;
+      }
+      urlQueueCard?.classList.add('hidden');
+      state.activeQueueJobIds = new Set();
+    }
+    return;
+  }
+
+  if (state.queueContext === 'search' && prevQueue.length > 0 && activeJobs.length > 0) {
+    const resultsPanelEl = document.getElementById('results-panel');
+    const queuePanelEl = document.getElementById('queue-panel');
+    if (activeAllDone && !activeHasFailure) {
+      queuePanelEl?.classList.add('hidden');
+      resultsPanelEl?.classList.remove('hidden');
+      renderResults(state.results);
+      toast('All downloads completed successfully');
+      state.activeQueueJobIds = new Set();
+    }
+  }
+}
+
+function toggleUrlButton() {
+  if (!urlInput || !urlDownloadBtn) return;
+  const lines = (urlInput.value || '').split('\n').map((v) => v.trim()).filter(Boolean);
+  urlDownloadBtn.disabled = lines.length === 0;
+}
+
+if (urlInput) {
+  urlInput.addEventListener('input', toggleUrlButton);
+}
+
+if (urlDownloadBtn && urlInput) {
+  urlDownloadBtn.addEventListener('click', async () => {
+    const urls = (urlInput.value || '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (!urls.length) return;
+    const previousIds = new Set(state.queue.map((item) => item.job_id));
+    const res = await fetch('/api/url-downloads', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ urls }),
+    });
+    if (!res.ok) {
+      toast('Failed to queue URLs. Please check the links.', 'error');
+      return;
+    }
+    const data = await res.json();
+    const newIds = (data.queue || []).map((item) => item.job_id).filter((id) => !previousIds.has(id));
+    state.activeQueueJobIds = new Set(newIds);
+    state.queueContext = 'url';
+    renderQueue(data.queue, data.progress, data.history);
+    urlQueueCard?.classList.remove('hidden');
+  });
+}
+
 function connectSSE() {
   const status = document.getElementById('sse-status');
   const source = new EventSource('/events/downloads');
@@ -658,3 +733,4 @@ function connectSSE() {
 
 connectSSE();
 setInterval(refreshQueue, 6000);
+toggleUrlButton();

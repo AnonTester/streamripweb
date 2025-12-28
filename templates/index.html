@@ -17,6 +17,7 @@
 
   <nav class="tabs">
     <button class="tab active" data-tab="search">Search</button>
+    <button class="tab" data-tab="url">URL</button>
     <button class="tab" data-tab="saved">Saved for later</button>
     <button class="tab" data-tab="settings">Settings</button>
   </nav>
@@ -111,13 +112,37 @@
             </table>
           </div>
         </div>
-        <div id="queue-panel" class="hidden">
-          <div class="panel-header">
-            <h3>Download queue</h3>
-            <button id="back-to-results" class="btn ghost">Back to results</button>
-          </div>
-          <div id="queue-list" class="stack"></div>
+          <div id="queue-panel" class="hidden">
+            <div class="panel-header">
+              <h3>Download queue</h3>
+              <button id="back-to-results" class="btn ghost">Back to results</button>
+            </div>
+          <div id="queue-list" class="stack" data-queue-list></div>
         </div>
+      </div>
+    </section>
+
+    <section id="tab-url" class="tab-pane">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2>Download by URL</h2>
+            <p>Paste one or multiple URLs (one per line) to enqueue downloads directly.</p>
+          </div>
+          <button id="url-download-btn" class="btn primary" disabled>Download URLs</button>
+        </div>
+        <label class="query-label" for="url-input">URLs</label>
+        <textarea id="url-input" rows="6" placeholder="https://...&#10;https://..." aria-label="URL list"></textarea>
+        <p class="muted">Supported streamrip URLs. The queue will show progress and any errors.</p>
+      </div>
+      <div class="card hidden" id="url-queue-card" data-queue-panel="url">
+        <div class="card-header">
+          <div>
+            <h2>URL download queue</h2>
+            <p>Progress for URLs you submitted. Errors stay visible for retry or saving.</p>
+          </div>
+        </div>
+        <div id="url-queue-list" class="stack" data-queue-list></div>
       </div>
     </section>
 

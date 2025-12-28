@@ -3,6 +3,7 @@
 Streamrip Web is a FastAPI-powered web UI for the [streamrip](https://github.com/nathom/streamrip) downloader. It lets you:
 
 - Search across supported sources (Qobuz, Tidal, Deezer, SoundCloud) and media types.
+- Submit direct URLs for streamrip to resolve and download.
 - Queue downloads and monitor progress in real time through Server-Sent Events.
 - Retry, abort, and save items for later from the queue.
 - Manage your streamrip configuration from a browser-based settings panel.
@@ -54,3 +55,9 @@ uvicorn app.main:app --host 0.0.0.0 --port 8500
 ```
 
 Then open http://localhost:8500/ in your browser. The server auto-creates the `data/` directory and refreshes version metadata at startup. To run with live reload during development, add the `--reload` flag to the Uvicorn command.
+
+## Usage
+
+- **Search**: Choose a source and media type, enter a query, and queue any returned items for download. Progress appears in the queue view.
+- **URL download**: Open the **URL** tab, paste one or more streamrip-supported URLs (one per line), and start the download. Progress appears in the queue; the input field clears automatically once all URLs finish successfully.
+- **Saved for later**: Recover failed or deferred downloads and retry them at any time.

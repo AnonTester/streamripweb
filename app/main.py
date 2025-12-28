@@ -30,7 +30,7 @@ def sse_response(generator, *, formatted: bool = False):
     return StreamingResponse(generator, media_type="text/event-stream")
 
 
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.4.0"
 APP_REPO = os.getenv("STREAMRIP_WEB_REPO", "AnonTester/streamripweb")
 STREAMRIP_REPO = os.getenv("STREAMRIP_REPO", "nathom/streamrip")
 data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
@@ -253,6 +253,19 @@ async def start_download(payload: Dict[str, Any]):
         raise HTTPException(status_code=400, detail="items must be a list")
     logger.info("Download requested for %d item(s)", len(items))
     queue = await download_manager.enqueue(items)
+    return download_manager.queue_state()
+
+
+@app.post("/api/url-downloads")
+async def download_urls(payload: Dict[str, Any]):
+    urls = payload.get("urls")
+    if not isinstance(urls, list):
+        raise HTTPException(status_code=400, detail="urls must be a list of strings")
+    cleaned = [u.strip() for u in urls if isinstance(u, str) and u.strip()]
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="No valid URLs provided")
+    logger.info("URL download requested for %d url(s)", len(cleaned))
+    queue = await download_manager.enqueue_urls(cleaned)
     return download_manager.queue_state()
 
 
