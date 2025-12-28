@@ -12,7 +12,6 @@
       <h1>Streamrip Web</h1>
       <p class="subtitle">Full-featured web UI for the streamrip module</p>
     </div>
-    <div class="theme-hint">Auto theme · detects your browser preference</div>
   </header>
 
   <nav class="tabs">
@@ -31,42 +30,53 @@
           </div>
           <div class="sse-status" id="sse-status">Live updates connected</div>
         </div>
-        <form id="search-form" class="grid grid-4">
-          <label>
-            Source
-            <select name="source" required>
-              <option value="qobuz">Qobuz</option>
-              <option value="tidal">Tidal</option>
-              <option value="deezer">Deezer</option>
-              <option value="soundcloud">SoundCloud</option>
-            </select>
-          </label>
-          <label>
-            Media type
-            <select name="media_type" required>
-              <option value="album">Album</option>
-              <option value="track">Track</option>
-              <option value="artist">Artist</option>
-              <option value="playlist">Playlist</option>
-              <option value="label">Label</option>
-            </select>
-          </label>
-          <label>
-            Query
-            <input type="text" name="query" placeholder="Artist, album, playlist…" required>
-          </label>
-          <label>
-            Max results
-            <input type="number" name="limit" value="25" min="1" max="200">
-          </label>
-          <div class="form-actions">
-            <button type="submit" class="btn primary">Search</button>
-            <button type="button" id="select-all" class="btn ghost">Select all</button>
-            <button type="button" id="select-none" class="btn ghost">Select none</button>
-            <button type="button" id="select-invert" class="btn ghost">Invert selection</button>
+        <form id="search-form" class="search-form">
+          <div class="search-grid">
+            <label>
+              Source
+              <select name="source" required>
+                <option value="qobuz">Qobuz</option>
+                <option value="tidal">Tidal</option>
+                <option value="deezer">Deezer</option>
+                <option value="soundcloud">SoundCloud</option>
+              </select>
+            </label>
+            <label>
+              Media type
+              <select name="media_type" required>
+                <option value="album">Album</option>
+                <option value="track">Track</option>
+                <option value="artist">Artist</option>
+                <option value="playlist">Playlist</option>
+                <option value="label">Label</option>
+              </select>
+            </label>
+            <label>
+              Max results
+              <input type="number" name="limit" value="25" min="1" max="200">
+            </label>
+          </div>
+          <div class="query-row">
+            <label class="query-label" for="search-query">Query</label>
+            <div class="query-input">
+              <input id="search-query" type="search" name="query" placeholder="Artist, album, playlist…" required>
+              <button type="button" id="clear-query" aria-label="Clear search" hidden>&times;</button>
+              <button type="submit" class="btn primary">Search</button>
+            </div>
           </div>
         </form>
         <div id="results-panel">
+          <div class="results-actions">
+            <div class="selection-group">
+              <button type="button" id="select-all" class="btn ghost">Select all</button>
+              <button type="button" id="select-none" class="btn ghost">Select none</button>
+              <button type="button" id="select-invert" class="btn ghost">Invert selection</button>
+            </div>
+            <div class="action-group">
+              <button id="view-queue" class="btn ghost" type="button" hidden>View download queue</button>
+              <button id="download-btn" class="btn success" hidden>Download selected</button>
+            </div>
+          </div>
           <div class="table-wrapper">
             <table id="results-table">
               <thead>
@@ -83,9 +93,6 @@
               </thead>
               <tbody></tbody>
             </table>
-          </div>
-          <div class="table-actions">
-            <button id="download-btn" class="btn success" hidden>Download selected</button>
           </div>
         </div>
         <div id="queue-panel" class="hidden">
@@ -130,7 +137,18 @@
   <script>
     window.initialConfig = {{ config | tojson }};
     window.initialSaved = {{ saved | tojson }};
+    window.versionInfo = {{ versions | tojson }};
   </script>
   <script src="/static/main.js"></script>
+  <footer class="footer" aria-label="Version information">
+    <div>
+      <strong>App</strong>
+      <div class="muted">Version {{ versions.app.version }} · Latest {{ versions.app.latest or 'unknown' }}</div>
+    </div>
+    <div>
+      <strong>streamrip</strong>
+      <div class="muted">Version {{ versions.streamrip.version }} · Latest {{ versions.streamrip.latest or 'unknown' }} · {{ versions.streamrip.source }}</div>
+    </div>
+  </footer>
 </body>
 </html>

@@ -14,6 +14,19 @@ from streamrip.rip.main import Main
 from .config_manager import StreamripConfigManager
 
 
+def _stringify_artist(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return value.get("name") or value.get("artist") or value.get("title")
+    if isinstance(value, list):
+        parts = [_stringify_artist(v) for v in value]
+        return ", ".join([p for p in parts if p])
+    return str(value)
+
+
 @dataclass
 class QueueItem:
     job_id: str
@@ -242,7 +255,7 @@ class DownloadManager:
                     media_type=entry["media_type"],
                     item_id=entry["id"],
                     title=entry.get("title") or entry.get("name") or entry["id"],
-                    artist=entry.get("artist"),
+                    artist=_stringify_artist(entry.get("artist")),
                     downloaded=entry.get("downloaded", False),
                 )
                 self.queue[job_id] = item
@@ -334,6 +347,8 @@ class DownloadManager:
 
     async def save_for_later(self, job_id: str | None = None, payload: dict | None = None):
         if payload:
+            payload = dict(payload)
+            payload["artist"] = _stringify_artist(payload.get("artist"))
             self.saved_store.add([payload])
         elif job_id and job_id in self.queue:
             item = self.queue[job_id]

@@ -1,9 +1,22 @@
+function loadAppPrefs() {
+  try {
+    return JSON.parse(localStorage.getItem('appPrefs') || '{}');
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveAppPrefs(prefs) {
+  localStorage.setItem('appPrefs', JSON.stringify(prefs));
+}
+
 const state = {
   results: [],
   queue: [],
   saved: window.initialSaved || [],
   config: window.initialConfig || {},
-  progress: {}
+  progress: {},
+  appPrefs: loadAppPrefs(),
 };
 
 const tabs = document.querySelectorAll('.tab');
@@ -27,19 +40,31 @@ function toast(message, tone = 'info') {
   setTimeout(() => el.remove(), 4200);
 }
 
+function normalizeArtist(artist) {
+  if (!artist) return '';
+  if (typeof artist === 'string') return artist;
+  if (typeof artist === 'object') {
+    return artist.name || artist.artist || artist.title || '';
+  }
+  return String(artist);
+}
+
 function renderResults(results) {
   const tbody = document.querySelector('#results-table tbody');
   tbody.innerHTML = '';
   results.forEach((row, idx) => {
     const tr = document.createElement('tr');
-    if (row.downloaded) tr.classList.add('downloaded');
+    const isDownloaded = Boolean(row.downloaded);
+    if (isDownloaded) tr.classList.add('downloaded');
     tr.dataset.id = row.id;
     tr.dataset.index = idx;
-    const checked = row.downloaded ? '' : '';
+    const artist = normalizeArtist(row.artist);
+    const checkboxState = isDownloaded ? 'disabled' : '';
+    const downloadedPill = isDownloaded ? '<span class="pill pill-downloaded">Downloaded</span>' : '';
     tr.innerHTML = `
-      <td><input type="checkbox" data-index="${idx}" ${checked}></td>
-      <td>${row.title || row.summary}</td>
-      <td>${row.artist || ''}</td>
+      <td><input type="checkbox" data-index="${idx}" ${checkboxState} title="${isDownloaded ? 'Already downloaded' : 'Select for download'}"></td>
+      <td>${row.title || row.summary} ${downloadedPill}</td>
+      <td>${artist}</td>
       <td>${row.year || ''}</td>
       <td>${row.album_type || row.media_type || ''}</td>
       <td>${row.tracks || ''}</td>
@@ -67,7 +92,7 @@ function setCheckboxes(handler) {
 }
 
 document.getElementById('select-all').addEventListener('click', () => {
-  setCheckboxes((box, result, row) => {
+  setCheckboxes((box, result) => {
     if (result.downloaded) { box.checked = false; return; }
     box.checked = true;
   });
@@ -92,6 +117,30 @@ tbody.addEventListener('change', (ev) => {
 });
 
 const searchForm = document.getElementById('search-form');
+const queryInput = document.getElementById('search-query');
+const clearQueryBtn = document.getElementById('clear-query');
+const sourceSelect = searchForm.querySelector('select[name="source"]');
+
+function applyDefaultSource() {
+  if (state.appPrefs.defaultSource && sourceSelect) {
+    sourceSelect.value = state.appPrefs.defaultSource;
+  }
+}
+
+applyDefaultSource();
+
+function toggleClearButton() {
+  clearQueryBtn.hidden = !queryInput.value;
+}
+
+queryInput.addEventListener('input', toggleClearButton);
+clearQueryBtn.addEventListener('click', () => {
+  queryInput.value = '';
+  toggleClearButton();
+  queryInput.focus();
+});
+toggleClearButton();
+
 searchForm.addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const formData = new FormData(searchForm);
@@ -100,7 +149,7 @@ searchForm.addEventListener('submit', async (ev) => {
   const res = await fetch('/api/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
   const data = await res.json();
   state.results = data.results || [];
@@ -109,24 +158,36 @@ searchForm.addEventListener('submit', async (ev) => {
 });
 
 function buildQueueRow(item) {
-  const progress = state.progress[item.job_id] || { overall: { received: 0, total: 0 } };
-  const pct = progress.overall && progress.overall.total
-    ? Math.min(100, Math.round((progress.overall.received / progress.overall.total) * 100))
-    : 0;
-  const eta = progress.overall && progress.overall.eta ? `${Math.round(progress.overall.eta)}s` : '—';
+  const progress = state.progress[item.job_id];
+  const overall = progress?.overall || { received: 0, total: 0 };
+  const total = overall.total || 0;
+  const received = overall.received || 0;
+  const pct = item.status === 'completed'
+    ? 100
+    : total
+      ? Math.min(100, Math.round((received / total) * 100))
+      : 0;
+  const eta = overall.eta != null ? `${Math.max(0, Math.round(overall.eta))}s` : '—';
+  const statusLabel = item.status === 'completed'
+    ? 'Completed'
+    : item.status === 'failed'
+      ? 'Failed'
+      : pct
+        ? `${pct}%`
+        : item.status.replace('_', ' ');
   const div = document.createElement('div');
   div.className = 'queue-item';
   div.innerHTML = `
     <div class="queue-header">
       <div>
-        <strong>${item.title}</strong><div class="muted">${item.artist || ''}</div>
+        <strong>${item.title}</strong><div class="muted">${normalizeArtist(item.artist) || ''}</div>
       </div>
-      <div class="status ${item.status}">${item.status}</div>
+      <div class="status ${item.status}">${statusLabel}</div>
     </div>
     <div class="muted">Attempts: ${item.attempts || 0}${item.error ? ` · ${item.error}` : ''}</div>
     <div class="progress-bar"><span style="width:${pct}%;"></span></div>
     <div class="muted">Overall ETA: ${eta}</div>
-    <div class="stack" style="margin-top:8px; flex-direction:row; gap:8px;">
+    <div class="stack action-row">
       <button class="btn ghost" data-action="retry" data-id="${item.job_id}">Retry</button>
       <button class="btn ghost" data-action="save" data-id="${item.job_id}">Save for later</button>
       <button class="btn danger" data-action="abort" data-id="${item.job_id}">Abort</button>
@@ -142,6 +203,7 @@ function renderQueue(queue) {
   state.queue.forEach((item) => {
     list.appendChild(buildQueueRow(item));
   });
+  document.getElementById('view-queue').hidden = state.queue.length === 0;
 }
 
 function renderSaved(saved) {
@@ -157,10 +219,10 @@ function renderSaved(saved) {
     row.className = 'queue-item';
     row.innerHTML = `
       <div class="queue-header">
-        <div><strong>${item.title || item.id}</strong><div class="muted">${item.artist || ''}</div></div>
+        <div><strong>${item.title || item.id}</strong><div class="muted">${normalizeArtist(item.artist) || ''}</div></div>
         <div class="muted">${item.source} · ${item.media_type}</div>
       </div>
-      <div class="stack" style="margin-top:8px; flex-direction:row; gap:8px;">
+      <div class="stack action-row">
         <button class="btn primary" data-saved-download="${idx}">Download</button>
         <button class="btn ghost" data-saved-remove="${idx}">Remove</button>
       </div>
@@ -169,9 +231,41 @@ function renderSaved(saved) {
   });
 }
 
+function createSettingRow(labelText, control) {
+  const row = document.createElement('div');
+  row.className = 'setting-row';
+  const label = document.createElement('label');
+  label.textContent = labelText;
+  if (control.id) label.setAttribute('for', control.id);
+  row.append(label, control);
+  return row;
+}
+
+function buildAppSettingsSection() {
+  const sec = document.createElement('div');
+  sec.className = 'settings-section';
+  sec.innerHTML = '<h3>app</h3>';
+  const select = document.createElement('select');
+  select.dataset.app = 'defaultSource';
+  select.name = 'defaultSource';
+  select.id = 'default-source';
+  ['qobuz', 'tidal', 'deezer', 'soundcloud'].forEach((src) => {
+    const opt = document.createElement('option');
+    opt.value = src;
+    opt.textContent = src.charAt(0).toUpperCase() + src.slice(1);
+    select.appendChild(opt);
+  });
+  select.value = state.appPrefs.defaultSource || 'qobuz';
+  sec.appendChild(createSettingRow('Default search source', select));
+  return sec;
+}
+
 function renderSettings(config) {
   const container = document.getElementById('settings-form');
   container.innerHTML = '';
+
+  container.appendChild(buildAppSettingsSection());
+
   Object.entries(config).forEach(([section, values]) => {
     if (section === 'toml' || section === '_modified') return;
     const sec = document.createElement('div');
@@ -179,15 +273,25 @@ function renderSettings(config) {
     sec.innerHTML = `<h3>${section}</h3>`;
     Object.entries(values).forEach(([key, value]) => {
       const id = `${section}.${key}`;
-      const field = document.createElement('label');
+      const controlId = `${section}-${key}`;
+      let control;
       if (Array.isArray(value)) {
-        field.innerHTML = `${key}<input data-config="${id}" data-type="list" value="${value.join(', ')}" />`;
+        control = document.createElement('input');
+        control.dataset.config = id;
+        control.dataset.type = 'list';
+        control.value = value.join(', ');
       } else if (typeof value === 'boolean') {
-        field.innerHTML = `${key}<input type="checkbox" data-config="${id}" ${value ? 'checked' : ''}>`;
+        control = document.createElement('input');
+        control.type = 'checkbox';
+        control.dataset.config = id;
+        control.checked = value;
       } else {
-        field.innerHTML = `${key}<input data-config="${id}" value="${value}" />`;
+        control = document.createElement('input');
+        control.dataset.config = id;
+        control.value = value;
       }
-      sec.appendChild(field);
+      control.id = controlId;
+      sec.appendChild(createSettingRow(key, control));
     });
     container.appendChild(sec);
   });
@@ -199,6 +303,9 @@ renderSettings(state.config);
 
 const queuePanel = document.getElementById('queue-panel');
 const resultsPanel = document.getElementById('results-panel');
+const backToResultsBtn = document.getElementById('back-to-results');
+const viewQueueBtn = document.getElementById('view-queue');
+
 document.getElementById('download-btn').addEventListener('click', async () => {
   const selected = Array.from(document.querySelectorAll('#results-table tbody input[type="checkbox"]:checked'))
     .map((box) => state.results[Number(box.dataset.index)]);
@@ -206,7 +313,7 @@ document.getElementById('download-btn').addEventListener('click', async () => {
   const res = await fetch('/api/downloads', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ items: selected })
+    body: JSON.stringify({ items: selected }),
   });
   const data = await res.json();
   renderQueue(data.queue);
@@ -214,9 +321,14 @@ document.getElementById('download-btn').addEventListener('click', async () => {
   queuePanel.classList.remove('hidden');
 });
 
-document.getElementById('back-to-results').addEventListener('click', () => {
+backToResultsBtn.addEventListener('click', () => {
   queuePanel.classList.add('hidden');
   resultsPanel.classList.remove('hidden');
+});
+
+viewQueueBtn.addEventListener('click', () => {
+  resultsPanel.classList.add('hidden');
+  queuePanel.classList.remove('hidden');
 });
 
 const queueList = document.getElementById('queue-list');
@@ -236,15 +348,16 @@ savedList.addEventListener('click', async (ev) => {
     await fetch('/api/saved/download', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items: [item] })
+      body: JSON.stringify({ items: [item] }),
     });
+    toast('Starting download from saved');
   }
   if (removeIdx !== undefined) {
     const item = state.saved[Number(removeIdx)];
     await fetch('/api/saved/remove', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(item)
+      body: JSON.stringify(item),
     });
     toast('Removed saved item');
     await refreshSaved();
@@ -253,6 +366,7 @@ savedList.addEventListener('click', async (ev) => {
 
 document.getElementById('download-saved').addEventListener('click', async () => {
   await fetch('/api/saved/download', { method: 'POST' });
+  toast('Queued all saved items');
 });
 
 async function refreshSaved() {
@@ -292,10 +406,17 @@ document.getElementById('save-settings').addEventListener('click', async () => {
   const res = await fetch('/api/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
   const data = await res.json();
   state.config = data;
+  document.querySelectorAll('[data-app]').forEach((input) => {
+    if (input.name === 'defaultSource') {
+      state.appPrefs.defaultSource = input.value;
+    }
+  });
+  saveAppPrefs(state.appPrefs);
+  applyDefaultSource();
   toast('Settings saved');
 });
 
@@ -306,11 +427,16 @@ function connectSSE() {
   source.addEventListener('queue', (event) => {
     const data = JSON.parse(event.data);
     renderQueue(data);
+    const ids = new Set(data.map((item) => item.job_id));
+    Object.keys(state.progress).forEach((jobId) => {
+      if (!ids.has(jobId)) delete state.progress[jobId];
+    });
   });
 
   source.addEventListener('progress', (event) => {
     const data = JSON.parse(event.data);
     state.progress[data.job_id] = { overall: data.overall, track: data.track, progress: data.progress };
+    state.queue = state.queue.map((item) => (item.job_id === data.job_id ? { ...item, status: item.status === 'completed' ? item.status : 'in_progress' } : item));
     renderQueue(state.queue);
   });
 

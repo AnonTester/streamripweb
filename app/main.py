@@ -26,7 +26,7 @@ except Exception:  # pragma: no cover - fallback to StreamingResponse
         return StreamingResponse(generator, media_type="text/event-stream")
 
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.1"
 APP_REPO = os.getenv("STREAMRIP_WEB_REPO", "nathom/streamripweb")
 STREAMRIP_REPO = os.getenv("STREAMRIP_REPO", "nathom/streamrip")
 
@@ -203,10 +203,42 @@ def extract_items_from_page(page: dict, source: str, media_type: str) -> list[di
     return []
 
 
+def _stringify_artist(value: Any) -> str | None:
+    """Normalize artist field to a readable string."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return value.get("name") or value.get("artist") or value.get("title")
+    if isinstance(value, list):
+        parts = [
+            _stringify_artist(item)
+            for item in value
+            if _stringify_artist(item) is not None
+        ]
+        return ", ".join([p for p in parts if p])
+    return str(value)
+
+
+def _extract_year(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return str(int(value))
+    if isinstance(value, str):
+        return value[:4]
+    if isinstance(value, dict):
+        for key in ("year", "release_year", "releaseYear"):
+            if key in value and value[key]:
+                return str(value[key])[:4]
+    return None
+
+
 def summarize_item(
     raw: dict, summary_obj: Any, media_type: str, source: str
 ) -> dict:
-    artist = (
+    artist = _stringify_artist(
         raw.get("performer", {}).get("name")
         or raw.get("artist")
         or raw.get("artist", {}).get("name")
@@ -252,7 +284,7 @@ def summarize_item(
         "artist": artist,
         "album_type": album_type,
         "tracks": tracks,
-        "year": release,
+        "year": _extract_year(release),
         "explicit": bool(explicit),
         "summary": getattr(summary_obj, "summarize", lambda: title)(),
     }
