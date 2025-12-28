@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Streamrip Web</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v={{ app_version }}">
 </head>
 <body>
   <header class="header">
@@ -26,9 +26,8 @@
         <div class="card-header">
           <div>
             <h2>Search</h2>
-            <p>Search any supported source and media type. Results highlight previously downloaded items.</p>
           </div>
-          <div class="sse-status" id="sse-status">Live updates connected</div>
+          <div class="sse-status error" id="sse-status">Offline</div>
         </div>
         <form id="search-form" class="search-form">
           <div class="search-grid">
@@ -60,7 +59,6 @@
             <label class="query-label" for="search-query">Query</label>
             <div class="query-input">
               <input id="search-query" type="search" name="query" placeholder="Artist, album, playlist…" required>
-              <button type="button" id="clear-query" aria-label="Clear search" hidden>&times;</button>
               <button type="submit" class="btn primary">Search</button>
             </div>
           </div>
@@ -168,16 +166,30 @@
     window.initialHistory = {{ history | tojson }};
     window.initialAppSettings = {{ app_settings | tojson }};
     window.versionInfo = {{ versions | tojson }};
+    window.appVersion = {{ app_version | tojson }};
   </script>
-  <script src="/static/main.js"></script>
+  <script src="/static/main.js?v={{ app_version }}"></script>
   <footer class="footer" aria-label="Version information">
     <div>
       <strong>App</strong>
-      <div class="muted">Version {{ versions.app.version }} · Latest {{ versions.app.latest or 'unknown' }}</div>
+      <div class="muted">
+        v<a href="https://github.com/{{ versions.app.repo }}" target="_blank" rel="noreferrer noopener">{{ versions.app.version }}</a>
+        · Latest
+        <a href="https://github.com/{{ versions.app.repo }}" target="_blank" rel="noreferrer noopener">
+          {{ versions.app.latest or 'unknown' }}
+        </a>
+      </div>
     </div>
     <div>
       <strong>streamrip</strong>
-      <div class="muted">Version {{ versions.streamrip.version }} · Latest {{ versions.streamrip.latest or 'unknown' }} · {{ versions.streamrip.source }}</div>
+      <div class="muted">
+        v<a href="https://github.com/{{ versions.streamrip.repo }}" target="_blank" rel="noreferrer noopener">{{ versions.streamrip.version }}</a>
+        · Latest
+        <a href="https://github.com/{{ versions.streamrip.repo }}" target="_blank" rel="noreferrer noopener">
+          {{ versions.streamrip.latest or 'unknown' }}
+        </a>
+        · {{ versions.streamrip.source }}
+      </div>
     </div>
   </footer>
 </body>

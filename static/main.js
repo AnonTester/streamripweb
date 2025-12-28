@@ -173,7 +173,6 @@ tbody.addEventListener('change', (ev) => {
 
 const searchForm = document.getElementById('search-form');
 const queryInput = document.getElementById('search-query');
-const clearQueryBtn = document.getElementById('clear-query');
 const sourceSelect = searchForm.querySelector('select[name="source"]');
 const searchLoadingBanner = document.getElementById('search-loading');
 const searchLoadingText = document.getElementById('search-loading-text');
@@ -187,18 +186,6 @@ function applyDefaultSource() {
 
 applyDefaultSource();
 
-function toggleClearButton() {
-  clearQueryBtn.hidden = !queryInput.value;
-}
-
-queryInput.addEventListener('input', toggleClearButton);
-clearQueryBtn.addEventListener('click', () => {
-  queryInput.value = '';
-  toggleClearButton();
-  queryInput.focus();
-});
-toggleClearButton();
-
 function setSearchLoading(isLoading, message = 'Fetching results…') {
   if (!searchLoadingBanner) return;
   searchLoadingBanner.classList.toggle('hidden', !isLoading);
@@ -208,7 +195,6 @@ function setSearchLoading(isLoading, message = 'Fetching results…') {
     searchSubmitBtn.textContent = isLoading ? 'Searching…' : 'Search';
   }
   searchForm.querySelectorAll('input, select, button').forEach((el) => {
-    if (el === clearQueryBtn) return;
     el.disabled = isLoading;
   });
   document.getElementById('results-card')?.classList.remove('hidden');
@@ -399,8 +385,17 @@ function buildAppSettingsSection() {
   debugToggle.name = 'debugLogging';
   debugToggle.id = 'debug-logging';
   debugToggle.checked = Boolean(state.appSettings.debugLogging);
+  const portInput = document.createElement('input');
+  portInput.type = 'number';
+  portInput.min = '1';
+  portInput.step = '1';
+  portInput.dataset.app = 'port';
+  portInput.name = 'port';
+  portInput.id = 'app-port';
+  portInput.value = state.appSettings.port || 8500;
   sec.appendChild(createSettingRow('Default search source', select));
   sec.appendChild(createSettingRow('Enable debug logging', debugToggle));
+  sec.appendChild(createSettingRow('Port', portInput));
   return sec;
 }
 
@@ -578,6 +573,10 @@ document.getElementById('save-app-settings').addEventListener('click', async () 
     if (input.name === 'debugLogging') {
       state.appSettings.debugLogging = input.checked;
     }
+    if (input.name === 'port') {
+      const parsed = Number(input.value);
+      state.appSettings.port = Number.isFinite(parsed) && parsed > 0 ? parsed : 8500;
+    }
   });
   saveAppPrefs(state.appSettings);
   applyDefaultSource();
@@ -621,13 +620,13 @@ function connectSSE() {
 
   source.onerror = () => {
     status.classList.add('error');
-    status.textContent = 'Live updates disconnected';
+    status.textContent = 'Offline';
     toast('SSE connection lost', 'error');
   };
 
   source.onopen = () => {
     status.classList.remove('error');
-    status.textContent = 'Live updates connected';
+    status.textContent = 'Online';
     refreshQueue();
   };
 }

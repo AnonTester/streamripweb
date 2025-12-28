@@ -30,11 +30,12 @@ def sse_response(generator, *, formatted: bool = False):
     return StreamingResponse(generator, media_type="text/event-stream")
 
 
-APP_VERSION = "0.2.2"
+APP_VERSION = "0.2.3"
 APP_REPO = os.getenv("STREAMRIP_WEB_REPO", "AnonTester/streamripweb")
 STREAMRIP_REPO = os.getenv("STREAMRIP_REPO", "nathom/streamrip")
 data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
 app_settings_path = os.path.join(data_dir, "app_settings.json")
+DEFAULT_PORT = 8500
 
 logging.basicConfig(
     level=logging.INFO,
@@ -402,6 +403,21 @@ def _write_cache(cache: dict):
         json.dump(cache, f, indent=2)
 
 
+def _normalize_port(value: Any) -> int:
+    try:
+        port = int(value)
+        if port > 0:
+            return port
+    except (TypeError, ValueError):
+        pass
+    return DEFAULT_PORT
+
+
+def get_configured_port(settings: dict | None = None) -> int:
+    source = settings if settings is not None else load_app_settings()
+    return _normalize_port(source.get("port", DEFAULT_PORT))
+
+
 async def get_version_data() -> dict:
     cache = _load_cache()
     now = time.time()
@@ -501,7 +517,11 @@ async def refresh_versions(force: bool):
 
 
 def load_app_settings() -> dict:
-    defaults = {"defaultSource": "qobuz", "debugLogging": False}
+    defaults = {
+        "defaultSource": "qobuz",
+        "debugLogging": False,
+        "port": DEFAULT_PORT,
+    }
     try:
         with open(app_settings_path) as f:
             saved = json.load(f)
@@ -509,12 +529,13 @@ def load_app_settings() -> dict:
         return defaults
     except json.JSONDecodeError:
         return defaults
-    return {**defaults, **saved}
+    return {**defaults, **saved, "port": _normalize_port(saved.get("port"))}
 
 
 def save_app_settings(payload: dict) -> dict:
     Path(app_settings_path).parent.mkdir(parents=True, exist_ok=True)
     merged = {**load_app_settings(), **payload}
+    merged["port"] = _normalize_port(payload.get("port", merged.get("port")))
     with open(app_settings_path, "w") as f:
         json.dump(merged, f, indent=2)
     logger.info("Persisted app settings: %s", merged)
@@ -533,4 +554,6 @@ def _apply_logging_preferences(settings: dict):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "app.main:app", host="0.0.0.0", port=get_configured_port(), reload=True
+    )

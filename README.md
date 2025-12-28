@@ -47,10 +47,10 @@ Any updates made in the UI are validated against streamrip’s dataclass-backed 
 
 ## Startup
 
-Launch the application with Uvicorn:
+Launch the application with Uvicorn (default port 8500):
 
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8500
 ```
 
-Then open http://localhost:8000/ in your browser. The server auto-creates the `data/` directory and refreshes version metadata at startup. To run with live reload during development, add the `--reload` flag to the Uvicorn command.
+Then open http://localhost:8500/ in your browser. The server auto-creates the `data/` directory and refreshes version metadata at startup. To run with live reload during development, add the `--reload` flag to the Uvicorn command.
