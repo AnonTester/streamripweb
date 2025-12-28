@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import time
 import uuid
@@ -12,6 +13,8 @@ from streamrip.media.track import Track
 from streamrip.rip.main import Main
 
 from .config_manager import StreamripConfigManager
+
+logger = logging.getLogger("streamripweb.download")
 
 
 def _stringify_artist(value: Any) -> str | None:
@@ -89,6 +92,7 @@ class ProgressTap:
             "current_track", default=None
         )
         self.job_totals: dict[str, dict[str, Any]] = {}
+        self.latest_progress: dict[str, dict[str, Any]] = {}
         self._patch()
 
     def _patch(self):
@@ -98,6 +102,11 @@ class ProgressTap:
 
         async def patched_download(self_ref: Track, *args, **kwargs):
             job_id = tap.current_job.get()
+            logger.debug(
+                "Starting track download | job_id=%s track=%s",
+                job_id,
+                getattr(self_ref.meta.info, "id", None),
+            )
             track_info = {
                 "track_id": self_ref.meta.info.id,
                 "title": self_ref.meta.title,
@@ -110,6 +119,11 @@ class ProgressTap:
                 return await original_download(self_ref, *args, **kwargs)
             finally:
                 tap.current_track.reset(token)
+                logger.debug(
+                    "Finished track download | job_id=%s track=%s",
+                    job_id,
+                    getattr(self_ref.meta.info, "id", None),
+                )
 
         Track.download = patched_download  # type: ignore
 
@@ -118,9 +132,11 @@ class ProgressTap:
             "tracks": {},
             "started_at": time.monotonic(),
         }
+        logger.info("Progress tracking started for job %s", job_id)
 
     def finish_job(self, job_id: str):
         self.job_totals.pop(job_id, None)
+        logger.info("Progress tracking finished for job %s", job_id)
 
     def _patched_get_progress(self, enabled: bool, total: int, desc: str):
         handle = self.original_get_progress(enabled, total, desc)
@@ -168,6 +184,16 @@ class ProgressTap:
             }
             if track_ctx:
                 event_data |= {"track": track_ctx}
+            self.latest_progress[job_id or "unknown"] = event_data
+            logger.debug(
+                "Progress update | job_id=%s track_id=%s received=%s total=%s eta=%s overall_eta=%s",
+                job_id,
+                track_id,
+                track_state["received"],
+                total,
+                event_data["progress"]["eta"],
+                event_data["overall"]["eta"],
+            )
             asyncio.create_task(
                 self.broker.publish(
                     {"event": "progress", "data": event_data}
@@ -183,6 +209,9 @@ class ProgressTap:
             handle.done()
 
         return progress.Handle(update, done)
+
+    def snapshot(self) -> dict[str, dict[str, Any]]:
+        return dict(self.latest_progress)
 
 
 class SavedStore:
@@ -336,8 +365,16 @@ class DownloadManager:
                 )
                 self.queue[job_id] = item
                 self.order.append(job_id)
+                logger.info(
+                    "Enqueued item | job_id=%s source=%s media_type=%s item_id=%s title=%s",
+                    job_id,
+                    entry.get("source"),
+                    entry.get("media_type"),
+                    entry.get("id"),
+                    item.title,
+                )
             await self.event_broker.publish(
-                {"event": "queue", "data": self.snapshot()}
+                {"event": "queue", "data": self.snapshot(), "progress": self.progress_tap.snapshot()}
             )
             if self.worker is None or self.worker.done():
                 self.worker = asyncio.create_task(self._worker())
@@ -350,6 +387,7 @@ class DownloadManager:
                     return
                 job_id = self.order[0]
             item = self.queue[job_id]
+            logger.debug("Worker picked job %s with status %s", job_id, item.status)
             if item.status in {"completed", "aborted"}:
                 async with self.lock:
                     self.order.pop(0)
@@ -358,7 +396,7 @@ class DownloadManager:
             async with self.lock:
                 self.order.pop(0)
                 await self.event_broker.publish(
-                    {"event": "queue", "data": self.snapshot()}
+                    {"event": "queue", "data": self.snapshot(), "progress": self.progress_tap.snapshot()}
                 )
 
     async def _process_item(self, item: QueueItem):
@@ -366,9 +404,17 @@ class DownloadManager:
         item.error = None
         self.progress_tap.start_job(item.job_id)
         await self.event_broker.publish(
-            {"event": "queue", "data": self.snapshot()}
+            {"event": "queue", "data": self.snapshot(), "progress": self.progress_tap.snapshot()}
         )
         backoff = 1.0
+        logger.info(
+            "Processing job | job_id=%s source=%s media_type=%s item_id=%s title=%s",
+            item.job_id,
+            item.source,
+            item.media_type,
+            item.item_id,
+            item.title,
+        )
         for attempt in range(5):
             item.attempts = attempt + 1
             token = self.progress_tap.current_job.set(item.job_id)
@@ -377,6 +423,7 @@ class DownloadManager:
                 item.status = "completed"
                 item.downloaded = True
                 self._record_download(item)
+                logger.info("Job completed | job_id=%s attempts=%s", item.job_id, item.attempts)
                 self.saved_store.remove(
                     lambda saved: saved.get("id") == item.item_id
                     and saved.get("source") == item.source
@@ -388,6 +435,7 @@ class DownloadManager:
                     {
                         "event": "queue",
                         "data": self.snapshot(),
+                        "progress": self.progress_tap.snapshot(),
                     }
                 )
                 self.progress_tap.finish_job(item.job_id)
@@ -395,10 +443,17 @@ class DownloadManager:
             except Exception as exc:  # noqa: BLE001
                 item.error = str(exc)
                 item.status = "retrying"
+                logger.exception(
+                    "Error during download | job_id=%s attempt=%s error=%s",
+                    item.job_id,
+                    attempt + 1,
+                    exc,
+                )
                 await self.event_broker.publish(
                     {
                         "event": "queue",
                         "data": self.snapshot(),
+                        "progress": self.progress_tap.snapshot(),
                         "meta": {"message": "retrying", "backoff": backoff},
                     }
                 )
@@ -408,17 +463,26 @@ class DownloadManager:
                 self.progress_tap.current_job.reset(token)
         item.status = "failed"
         self.progress_tap.finish_job(item.job_id)
+        logger.error("Job failed after retries | job_id=%s error=%s", item.job_id, item.error)
         await self.event_broker.publish(
-            {"event": "queue", "data": self.snapshot()}
+            {"event": "queue", "data": self.snapshot(), "progress": self.progress_tap.snapshot()}
         )
 
     async def _run_streamrip(self, item: QueueItem):
         config = self.config_manager.load()
         config.file.cli.progress_bars = True
+        logger.debug(
+            "Launching streamrip Main for job %s | source=%s media_type=%s item_id=%s",
+            item.job_id,
+            item.source,
+            item.media_type,
+            item.item_id,
+        )
         async with Main(config) as main:
             await main.add_all_by_id(
                 [(item.source, item.media_type, item.item_id)]
             )
+            logger.debug("Resolved items for job %s; beginning rip", item.job_id)
             await main.resolve()
             await main.rip()
 
@@ -427,6 +491,11 @@ class DownloadManager:
             payload = dict(payload)
             payload["artist"] = _stringify_artist(payload.get("artist"))
             self.saved_store.add([payload])
+            logger.info(
+                "Saved arbitrary payload for later | id=%s source=%s",
+                payload.get("id"),
+                payload.get("source"),
+            )
         elif job_id and job_id in self.queue:
             item = self.queue[job_id]
             self.saved_store.add(
@@ -440,6 +509,7 @@ class DownloadManager:
                     }
                 ]
             )
+            logger.info("Saved job for later | job_id=%s", job_id)
         await self.event_broker.publish(
             {"event": "saved", "data": self.saved_store.list()}
         )
@@ -450,12 +520,13 @@ class DownloadManager:
         item = self.queue[job_id]
         item.status = "queued"
         item.error = None
+        logger.info("Retrying job %s", job_id)
         async with self.lock:
             self.order.append(job_id)
             if self.worker is None or self.worker.done():
                 self.worker = asyncio.create_task(self._worker())
         await self.event_broker.publish(
-            {"event": "queue", "data": self.snapshot()}
+            {"event": "queue", "data": self.snapshot(), "progress": self.progress_tap.snapshot()}
         )
 
     async def abort(self, job_id: str):
@@ -463,12 +534,14 @@ class DownloadManager:
             return
         item = self.queue[job_id]
         item.status = "aborted"
+        logger.warning("Aborted job %s", job_id)
         await self.event_broker.publish(
             {"event": "queue", "data": self.snapshot()}
         )
 
     async def download_saved(self, entries: list[dict] | None = None):
         entries = entries or self.saved_store.list()
+        logger.info("Downloading saved entries count=%s", len(entries))
         await self.enqueue(entries)
         self.saved_store.remove(
             lambda saved: any(
@@ -488,6 +561,7 @@ class DownloadManager:
             lambda saved: saved.get("id") == target_id
             and saved.get("source") == source
         )
+        logger.info("Removed saved item | id=%s source=%s", target_id, source)
         await self.event_broker.publish(
             {"event": "saved", "data": self.saved_store.list()}
         )

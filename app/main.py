@@ -1,10 +1,11 @@
 import asyncio
 import json
+import logging
 import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
-from urllib.request import urlopen, Request
+from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -26,15 +27,22 @@ except Exception:  # pragma: no cover - fallback to StreamingResponse
         return StreamingResponse(generator, media_type="text/event-stream")
 
 
-APP_VERSION = "0.1.2"
+APP_VERSION = "0.2.0"
 APP_REPO = os.getenv("STREAMRIP_WEB_REPO", "AnonTester/streamripweb")
 STREAMRIP_REPO = os.getenv("STREAMRIP_REPO", "nathom/streamrip")
+data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+app_settings_path = os.path.join(data_dir, "app_settings.json")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("streamripweb")
 
 app = FastAPI(title="Streamrip Web", docs_url=None, redoc_url=None)
 base_dir = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(base_dir, "..", "templates"))
 config_manager = StreamripConfigManager()
-data_dir = os.path.join(os.path.dirname(base_dir), "data")
 saved_path = os.path.join(data_dir, "saved_for_later.json")
 version_cache_path = os.path.join(data_dir, "version_cache.json")
 history_path = os.path.join(data_dir, "download_history.json")
@@ -50,6 +58,9 @@ app.mount(
 @app.on_event("startup")
 async def on_startup():
     Path(data_dir).mkdir(parents=True, exist_ok=True)
+    Path(app_settings_path).parent.mkdir(parents=True, exist_ok=True)
+    app.state.app_settings = load_app_settings()
+    _apply_logging_preferences(app.state.app_settings)
     await refresh_versions(force=False)
 
 
@@ -64,6 +75,7 @@ async def index(request: Request):
             "config": config_snapshot,
             "saved": download_manager.saved_items(),
             "versions": version_data,
+            "app_settings": app.state.app_settings,
             "app_version": APP_VERSION,
         },
     )
@@ -80,33 +92,53 @@ async def download_events():
 
 @app.get("/api/config")
 async def get_config():
+    logger.debug("Configuration requested")
     return config_manager.export()
 
 
 @app.post("/api/config")
 async def update_config(payload: Dict[str, Dict[str, Any]]):
+    logger.info("Applying configuration updates for sections: %s", list(payload))
     return config_manager.update(payload)
+
+
+@app.get("/api/app-settings")
+async def get_app_settings():
+    logger.debug("App settings requested")
+    return app.state.app_settings
+
+
+@app.post("/api/app-settings")
+async def update_app_settings(payload: Dict[str, Any]):
+    logger.info("Updating app settings: %s", list(payload))
+    app.state.app_settings = save_app_settings(payload)
+    _apply_logging_preferences(app.state.app_settings)
+    return app.state.app_settings
 
 
 @app.get("/api/queue")
 async def queue_state():
-    return {"queue": download_manager.snapshot()}
+    logger.debug("Queue state requested")
+    return {"queue": download_manager.snapshot(), "progress": download_manager.progress_tap.snapshot()}
 
 
 @app.post("/api/queue/{job_id}/retry")
 async def retry_job(job_id: str):
+    logger.info("Retry requested for job %s", job_id)
     await download_manager.retry(job_id)
     return {"queue": download_manager.snapshot()}
 
 
 @app.post("/api/queue/{job_id}/abort")
 async def abort_job(job_id: str):
+    logger.warning("Abort requested for job %s", job_id)
     await download_manager.abort(job_id)
     return {"queue": download_manager.snapshot()}
 
 
 @app.post("/api/queue/{job_id}/save")
 async def save_job(job_id: str):
+    logger.info("Save-for-later requested for job %s", job_id)
     await download_manager.save_for_later(job_id=job_id)
     return {"saved": download_manager.saved_items()}
 
@@ -118,12 +150,14 @@ async def saved_items():
 
 @app.post("/api/saved")
 async def save_item(payload: Dict[str, Any]):
+    logger.info("Save item payload received: %s", payload)
     await download_manager.save_for_later(payload=payload)
     return {"saved": download_manager.saved_items()}
 
 
 @app.post("/api/saved/remove")
 async def remove_saved(payload: Dict[str, Any]):
+    logger.info("Remove saved payload: %s", payload)
     await download_manager.remove_saved(payload)
     return {"saved": download_manager.saved_items()}
 
@@ -131,6 +165,7 @@ async def remove_saved(payload: Dict[str, Any]):
 @app.post("/api/saved/download")
 async def download_saved(payload: Dict[str, Any] | None = None):
     entries = payload.get("items") if payload else None
+    logger.info("Download saved requested | entries=%s", (entries or "all"))
     await download_manager.download_saved(entries)
     return {"queue": download_manager.snapshot()}
 
@@ -147,6 +182,14 @@ async def search(payload: Dict[str, Any]):
     media_type = payload["media_type"]
     query = payload["query"]
 
+    logger.info(
+        "Search requested | source=%s media_type=%s limit=%s query=%s",
+        source,
+        media_type,
+        limit,
+        query,
+    )
+
     from streamrip.metadata.search_results import SearchResults
     from streamrip.rip.main import Main
 
@@ -157,7 +200,9 @@ async def search(payload: Dict[str, Any]):
     )
     async with Main(config) as main:
         client = await main.get_logged_in_client(source)
+        logger.debug("Executing provider search with payload: %s", payload)
         pages = await client.search(media_type, query, limit=limit)
+        logger.debug("Raw provider response pages: %s", pages)
         if len(pages) == 0:
             return {"results": []}
 
@@ -166,6 +211,7 @@ async def search(payload: Dict[str, Any]):
         flattened: list[dict] = []
         for page in pages:
             flattened.extend(extract_items_from_page(page, source, media_type))
+        logger.debug("Flattened raw items extracted: %s", flattened)
 
         try:
             downloaded_ids |= {str(row[0]) for row in main.database.downloads.all()}
@@ -177,6 +223,15 @@ async def search(payload: Dict[str, Any]):
             entry["downloaded"] = str(summary.id) in downloaded_ids or download_manager.has_downloaded(entry["source"], entry["id"])
             results.append(entry)
 
+    logger.info(
+        "Search finished | source=%s media_type=%s query=%s results=%d",
+        source,
+        media_type,
+        query,
+        len(results),
+    )
+    logger.debug("Search results payload: %s", results)
+
     return {"results": results}
 
 
@@ -185,6 +240,7 @@ async def start_download(payload: Dict[str, Any]):
     items = payload.get("items", [])
     if not isinstance(items, list):
         raise HTTPException(status_code=400, detail="items must be a list")
+    logger.info("Download requested for %d item(s)", len(items))
     queue = await download_manager.enqueue(items)
     return {"queue": queue}
 
@@ -361,7 +417,7 @@ async def get_version_data() -> dict:
 
 
 def _http_get_json(url: str) -> dict:
-    req = Request(url, headers={"Accept": "application/vnd.github+json"})
+    req = UrlRequest(url, headers={"Accept": "application/vnd.github+json"})
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -431,6 +487,36 @@ async def refresh_versions(force: bool):
         "streamrip_latest": streamrip_latest_label,
     }
     _write_cache(cache)
+
+
+def load_app_settings() -> dict:
+    defaults = {"defaultSource": "qobuz", "debugLogging": False}
+    try:
+        with open(app_settings_path) as f:
+            saved = json.load(f)
+    except FileNotFoundError:
+        return defaults
+    except json.JSONDecodeError:
+        return defaults
+    return {**defaults, **saved}
+
+
+def save_app_settings(payload: dict) -> dict:
+    Path(app_settings_path).parent.mkdir(parents=True, exist_ok=True)
+    merged = {**load_app_settings(), **payload}
+    with open(app_settings_path, "w") as f:
+        json.dump(merged, f, indent=2)
+    logger.info("Persisted app settings: %s", merged)
+    return merged
+
+
+def _apply_logging_preferences(settings: dict):
+    debug_enabled = bool(settings.get("debugLogging"))
+    new_level = logging.DEBUG if debug_enabled else logging.INFO
+    logging.getLogger().setLevel(new_level)
+    logger.setLevel(new_level)
+    logging.getLogger("streamripweb.download").setLevel(new_level)
+    logger.info("Debug logging %s", "enabled" if debug_enabled else "disabled")
 
 
 if __name__ == "__main__":

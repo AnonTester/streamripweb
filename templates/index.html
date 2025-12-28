@@ -22,7 +22,7 @@
 
   <main>
     <section id="tab-search" class="tab-pane active">
-      <div class="card">
+      <div class="card" id="search-card">
         <div class="card-header">
           <div>
             <h2>Search</h2>
@@ -65,8 +65,16 @@
             </div>
           </div>
         </form>
+      </div>
+
+      <div class="card hidden" id="results-card">
+        <div class="card-header results-header">
+          <div>
+            <h2>Results & queue</h2>
+            <p>Review search results, select items, and monitor downloads.</p>
+          </div>
+        </div>
         <div id="results-panel">
-          <div id="results-empty" class="muted empty-state">Run a search to see results.</div>
           <div class="results-actions" hidden>
             <div class="selection-group" hidden>
               <button type="button" id="select-all" class="btn ghost">Select all</button>
@@ -78,6 +86,7 @@
               <button id="download-btn" class="btn success" hidden>Download selected</button>
             </div>
           </div>
+          <div id="results-empty" class="muted empty-state">Run a search to see results.</div>
           <div class="table-wrapper">
             <table id="results-table">
               <thead>
@@ -149,6 +158,7 @@
   <script>
     window.initialConfig = {{ config | tojson }};
     window.initialSaved = {{ saved | tojson }};
+    window.initialAppSettings = {{ app_settings | tojson }};
     window.versionInfo = {{ versions | tojson }};
   </script>
   <script src="/static/main.js"></script>

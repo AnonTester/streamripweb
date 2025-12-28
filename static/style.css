@@ -97,6 +97,10 @@ main {
   display: block;
 }
 
+.tab-pane > .card + .card {
+  margin-top: 14px;
+}
+
 .card {
   background: var(--card);
   border-radius: 16px;
@@ -111,6 +115,10 @@ main {
   align-items: flex-start;
   gap: 12px;
   margin-bottom: 12px;
+}
+
+.results-header {
+  align-items: center;
 }
 
 .grid { display: grid; gap: 12px; }
@@ -163,8 +171,9 @@ input:focus, select:focus, button:focus {
 .query-input #clear-query { border: 1px solid var(--border); background: var(--card); color: var(--muted); border-radius: 10px; padding: 0 12px; height: 42px; cursor: pointer; }
 .query-input #clear-query:hover { background: rgba(148, 163, 184, 0.1); }
 
-.results-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
+.results-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .selection-group, .action-group { display: flex; gap: 8px; flex-wrap: wrap; }
+.selection-group { margin-right: auto; }
 
 .pill {
   display: inline-block;
@@ -197,7 +206,7 @@ th, td {
 
 th { color: var(--muted); font-weight: 700; }
 
-tr.downloaded td { background: linear-gradient(90deg, rgba(22, 163, 74, 0.16), rgba(22, 163, 74, 0.04)); }
+tr.downloaded td { background: rgba(22, 163, 74, 0.16); }
 tr.failed td { background: rgba(185, 28, 28, 0.08); }
 
 .muted { color: var(--muted); }

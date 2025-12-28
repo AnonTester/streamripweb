@@ -16,7 +16,7 @@ const state = {
   saved: window.initialSaved || [],
   config: window.initialConfig || {},
   progress: {},
-  appPrefs: loadAppPrefs(),
+  appSettings: { ...(window.initialAppSettings || {}), ...loadAppPrefs() },
   lastQuery: '',
   hasSearched: false,
 };
@@ -51,6 +51,20 @@ function normalizeArtist(artist) {
   return String(artist);
 }
 
+function markResultDownloadedByQueueItem(item) {
+  let changed = false;
+  state.results = state.results.map((res) => {
+    if (res.id === String(item.item_id) || res.id === item.item_id) {
+      if (res.source === item.source && !res.downloaded) {
+        changed = true;
+        return { ...res, downloaded: true };
+      }
+    }
+    return res;
+  });
+  return changed;
+}
+
 function renderResults(results) {
   const tbody = document.querySelector('#results-table tbody');
   const actions = document.querySelector('.results-actions');
@@ -58,6 +72,9 @@ function renderResults(results) {
   const actionGroup = document.querySelector('.action-group');
   const tableWrapper = document.querySelector('.table-wrapper');
   const empty = document.getElementById('results-empty');
+  if (state.hasSearched || results.length) {
+    document.getElementById('results-card')?.classList.remove('hidden');
+  }
   tbody.innerHTML = '';
   const hasResults = results.length > 0;
   actions.hidden = !hasResults;
@@ -77,10 +94,9 @@ function renderResults(results) {
     tr.dataset.id = row.id;
     tr.dataset.index = idx;
     const artist = normalizeArtist(row.artist);
-    const checkboxState = isDownloaded ? 'disabled' : '';
     const downloadedPill = isDownloaded ? '<span class="pill pill-downloaded">Downloaded</span>' : '';
     tr.innerHTML = `
-      <td><input type="checkbox" data-index="${idx}" ${checkboxState} title="${isDownloaded ? 'Already downloaded' : 'Select for download'}"></td>
+      <td><input type="checkbox" data-index="${idx}" data-downloaded="${isDownloaded}" title="${isDownloaded ? 'Select again if desired' : 'Select for download'}"></td>
       <td>${artist}</td>
       <td>${row.title || row.summary} ${downloadedPill}</td>
       <td>${row.year || ''}</td>
@@ -99,11 +115,13 @@ function updateDownloadVisibility() {
   document.getElementById('download-btn').hidden = checked.length === 0;
 }
 
-function setCheckboxes(handler) {
+function setCheckboxes(handler, options = {}) {
+  const { includeDownloaded = true } = options;
   document.querySelectorAll('#results-table tbody tr').forEach((tr) => {
     const checkbox = tr.querySelector('input[type="checkbox"]');
     if (!checkbox) return;
     const result = state.results[Number(checkbox.dataset.index)];
+    if (!includeDownloaded && checkbox.dataset.downloaded === 'true') return;
     handler(checkbox, result, tr);
   });
   updateDownloadVisibility();
@@ -113,7 +131,7 @@ document.getElementById('select-all').addEventListener('click', () => {
   setCheckboxes((box, result) => {
     if (result.downloaded) { box.checked = false; return; }
     box.checked = true;
-  });
+  }, { includeDownloaded: false });
 });
 
 document.getElementById('select-none').addEventListener('click', () => {
@@ -124,7 +142,7 @@ document.getElementById('select-invert').addEventListener('click', () => {
   setCheckboxes((box, result) => {
     if (result.downloaded) { box.checked = false; return; }
     box.checked = !box.checked;
-  });
+  }, { includeDownloaded: false });
 });
 
 const tbody = document.querySelector('#results-table tbody');
@@ -140,8 +158,8 @@ const clearQueryBtn = document.getElementById('clear-query');
 const sourceSelect = searchForm.querySelector('select[name="source"]');
 
 function applyDefaultSource() {
-  if (state.appPrefs.defaultSource && sourceSelect) {
-    sourceSelect.value = state.appPrefs.defaultSource;
+  if (state.appSettings.defaultSource && sourceSelect) {
+    sourceSelect.value = state.appSettings.defaultSource;
   }
 }
 
@@ -195,6 +213,12 @@ function buildQueueRow(item) {
       : pct
         ? `${pct}%`
         : item.status.replace('_', ' ');
+  const trackProgress = progress?.progress || {};
+  const trackTotal = trackProgress.total || 0;
+  const trackReceived = trackProgress.received || 0;
+  const trackPct = trackTotal ? Math.min(100, Math.round((trackReceived / trackTotal) * 100)) : 0;
+  const trackEta = trackProgress.eta != null ? `${Math.max(0, Math.round(trackProgress.eta))}s` : '—';
+  const trackLabel = progress?.track?.title || trackProgress.desc || '—';
   const div = document.createElement('div');
   div.className = 'queue-item';
   div.innerHTML = `
@@ -207,6 +231,8 @@ function buildQueueRow(item) {
     <div class="muted">Attempts: ${item.attempts || 0}${item.error ? ` · ${item.error}` : ''}</div>
     <div class="progress-bar"><span style="width:${pct}%;"></span></div>
     <div class="muted">Overall ETA: ${eta}</div>
+    <div class="muted">Track: ${trackLabel} · ${trackPct ? `${trackPct}%` : '—'} · ETA ${trackEta}</div>
+    <div class="progress-bar"><span style="width:${trackPct}%;"></span></div>
     <div class="stack action-row">
       <button class="btn ghost" data-action="retry" data-id="${item.job_id}">Retry</button>
       <button class="btn ghost" data-action="save" data-id="${item.job_id}">Save for later</button>
@@ -216,14 +242,52 @@ function buildQueueRow(item) {
   return div;
 }
 
-function renderQueue(queue) {
-  state.queue = queue || state.queue;
+function renderQueue(queue, progressMap) {
+  const prevQueue = state.queue || [];
+  const incomingQueue = queue || state.queue;
+  if (progressMap) {
+    state.progress = progressMap;
+  }
+  state.queue = incomingQueue;
+  if (state.queue.length) {
+    document.getElementById('results-card')?.classList.remove('hidden');
+  }
   const list = document.getElementById('queue-list');
   list.innerHTML = '';
+  let resultsUpdated = false;
+  if (!state.queue.length && prevQueue.length) {
+    prevQueue.forEach((item) => {
+      if (item.status === 'completed') {
+        resultsUpdated = markResultDownloadedByQueueItem(item) || resultsUpdated;
+      }
+    });
+  }
   state.queue.forEach((item) => {
-    list.appendChild(buildQueueRow(item));
+    const progress = state.progress[item.job_id];
+    const status = progress && item.status !== 'completed' && item.status !== 'failed'
+      ? 'in_progress'
+      : item.status;
+    const normalizedItem = { ...item, status };
+    if (status === 'completed') {
+      resultsUpdated = markResultDownloadedByQueueItem(normalizedItem) || resultsUpdated;
+    }
+    list.appendChild(buildQueueRow(normalizedItem));
   });
   document.getElementById('view-queue').hidden = state.queue.length === 0;
+  if (resultsUpdated) {
+    renderResults(state.results);
+  }
+  if (queue && prevQueue.length > 0 && state.queue.length === 0) {
+    const hadFailure = prevQueue.some((item) => ['failed', 'aborted', 'retrying'].includes(item.status));
+    if (!hadFailure) {
+      toast('All downloads completed successfully');
+      const queuePanelEl = document.getElementById('queue-panel');
+      const resultsPanelEl = document.getElementById('results-panel');
+      queuePanelEl?.classList.add('hidden');
+      resultsPanelEl?.classList.remove('hidden');
+      renderResults(state.results);
+    }
+  }
 }
 
 function renderSaved(saved) {
@@ -275,8 +339,15 @@ function buildAppSettingsSection() {
     opt.textContent = src.charAt(0).toUpperCase() + src.slice(1);
     select.appendChild(opt);
   });
-  select.value = state.appPrefs.defaultSource || 'qobuz';
+  select.value = state.appSettings.defaultSource || 'qobuz';
+  const debugToggle = document.createElement('input');
+  debugToggle.type = 'checkbox';
+  debugToggle.dataset.app = 'debugLogging';
+  debugToggle.name = 'debugLogging';
+  debugToggle.id = 'debug-logging';
+  debugToggle.checked = Boolean(state.appSettings.debugLogging);
   sec.appendChild(createSettingRow('Default search source', select));
+  sec.appendChild(createSettingRow('Enable debug logging', debugToggle));
   return sec;
 }
 
@@ -322,6 +393,7 @@ renderResults(state.results);
 renderSaved(state.saved);
 renderSettings(state.config);
 
+const resultsCard = document.getElementById('results-card');
 const queuePanel = document.getElementById('queue-panel');
 const resultsPanel = document.getElementById('results-panel');
 const backToResultsBtn = document.getElementById('back-to-results');
@@ -345,6 +417,7 @@ document.getElementById('download-btn').addEventListener('click', async () => {
 backToResultsBtn.addEventListener('click', () => {
   queuePanel.classList.add('hidden');
   resultsPanel.classList.remove('hidden');
+  renderResults(state.results);
 });
 
 viewQueueBtn.addEventListener('click', () => {
@@ -396,6 +469,16 @@ async function refreshSaved() {
   renderSaved(data.saved || []);
 }
 
+async function refreshQueue() {
+  try {
+    const res = await fetch('/api/queue');
+    const data = await res.json();
+    renderQueue(data.queue || [], data.progress);
+  } catch (err) {
+    console.error('Failed to refresh queue', err);
+  }
+}
+
 function gatherSettingsPayload() {
   const payload = {};
   document.querySelectorAll('[data-config]').forEach((input) => {
@@ -434,14 +517,23 @@ document.getElementById('save-settings').addEventListener('click', async () => {
   toast('Settings saved');
 });
 
-document.getElementById('save-app-settings').addEventListener('click', () => {
+document.getElementById('save-app-settings').addEventListener('click', async () => {
   document.querySelectorAll('[data-app]').forEach((input) => {
     if (input.name === 'defaultSource') {
-      state.appPrefs.defaultSource = input.value;
+      state.appSettings.defaultSource = input.value;
+    }
+    if (input.name === 'debugLogging') {
+      state.appSettings.debugLogging = input.checked;
     }
   });
-  saveAppPrefs(state.appPrefs);
+  saveAppPrefs(state.appSettings);
   applyDefaultSource();
+  const res = await fetch('/api/app-settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(state.appSettings),
+  });
+  state.appSettings = await res.json();
   toast('App settings saved');
 });
 
@@ -451,8 +543,8 @@ function connectSSE() {
 
   source.addEventListener('queue', (event) => {
     const data = JSON.parse(event.data);
-    renderQueue(data);
-    const ids = new Set(data.map((item) => item.job_id));
+    renderQueue(data, data.progress);
+    const ids = new Set((data || []).map((item) => item.job_id));
     Object.keys(state.progress).forEach((jobId) => {
       if (!ids.has(jobId)) delete state.progress[jobId];
     });
@@ -479,7 +571,9 @@ function connectSSE() {
   source.onopen = () => {
     status.classList.remove('error');
     status.textContent = 'Live updates connected';
+    refreshQueue();
   };
 }
 
 connectSSE();
+setInterval(refreshQueue, 6000);
