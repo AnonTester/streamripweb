@@ -1,0 +1,404 @@
+import asyncio
+import json
+import os
+import time
+import uuid
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterable, List, Optional
+
+from streamrip import progress
+from streamrip.media.track import Track
+from streamrip.rip.main import Main
+
+from .config_manager import StreamripConfigManager
+
+
+@dataclass
+class QueueItem:
+    job_id: str
+    source: str
+    media_type: str
+    item_id: str
+    title: str
+    artist: str | None = None
+    status: str = "queued"
+    attempts: int = 0
+    error: str | None = None
+    downloaded: bool = False
+
+    def display_label(self) -> str:
+        label = self.title
+        if self.artist:
+            label += f" — {self.artist}"
+        return label
+
+
+class EventBroker:
+    def __init__(self):
+        self.subscribers: set[asyncio.Queue] = set()
+        self.lock = asyncio.Lock()
+
+    async def subscribe(self):
+        queue: asyncio.Queue = asyncio.Queue()
+        async with self.lock:
+            self.subscribers.add(queue)
+        try:
+            while True:
+                event = await queue.get()
+                yield event
+        finally:
+            async with self.lock:
+                self.subscribers.discard(queue)
+
+    async def publish(self, event: Dict[str, Any]):
+        async with self.lock:
+            subscribers = list(self.subscribers)
+        for queue in subscribers:
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                # Drop events if a subscriber is too slow.
+                pass
+
+
+class ProgressTap:
+    """Bridges streamrip progress callbacks to SSE events."""
+
+    def __init__(self, broker: EventBroker):
+        self.broker = broker
+        self.original_get_progress = progress.get_progress_callback
+        self.original_track_download = Track.download
+        self.current_job: ContextVar[str | None] = ContextVar(
+            "current_job", default=None
+        )
+        self.current_track: ContextVar[dict | None] = ContextVar(
+            "current_track", default=None
+        )
+        self.job_totals: dict[str, dict[str, Any]] = {}
+        self._patch()
+
+    def _patch(self):
+        progress.get_progress_callback = self._patched_get_progress
+        original_download = self.original_track_download
+        tap = self
+
+        async def patched_download(self_ref: Track, *args, **kwargs):
+            job_id = tap.current_job.get()
+            track_info = {
+                "track_id": self_ref.meta.info.id,
+                "title": self_ref.meta.title,
+                "album": getattr(self_ref.meta.album, "album", None),
+                "tracknumber": self_ref.meta.tracknumber,
+                "discnumber": self_ref.meta.discnumber,
+            }
+            token = tap.current_track.set(track_info)
+            try:
+                return await original_download(self_ref, *args, **kwargs)
+            finally:
+                tap.current_track.reset(token)
+
+        Track.download = patched_download  # type: ignore
+
+    def start_job(self, job_id: str):
+        self.job_totals[job_id] = {
+            "tracks": {},
+            "started_at": time.monotonic(),
+        }
+
+    def finish_job(self, job_id: str):
+        self.job_totals.pop(job_id, None)
+
+    def _patched_get_progress(self, enabled: bool, total: int, desc: str):
+        handle = self.original_get_progress(enabled, total, desc)
+        job_id = self.current_job.get()
+        track_ctx = self.current_track.get()
+        started = time.monotonic()
+        state = self.job_totals.setdefault(
+            job_id or "unknown",
+            {"tracks": {}, "started_at": started},
+        )
+        track_id = track_ctx.get("track_id") if track_ctx else desc
+
+        def _update_totals(increment: int):
+            track_state = state["tracks"].setdefault(
+                track_id,
+                {"received": 0, "total": total, "title": desc},
+            )
+            track_state["total"] = total
+            track_state["received"] = min(
+                track_state["received"] + increment, total
+            )
+            received_sum = sum(t["received"] for t in state["tracks"].values())
+            total_sum = sum(t["total"] for t in state["tracks"].values()) or total
+            elapsed = max(time.monotonic() - state["started_at"], 0.0001)
+            rate = received_sum / elapsed
+            eta_total = (
+                (total_sum - received_sum) / rate if rate > 0 else None
+            )
+            event_data = {
+                "job_id": job_id,
+                "progress": {
+                    "track_id": track_id,
+                    "desc": desc,
+                    "received": track_state["received"],
+                    "total": total,
+                    "eta": (total - track_state["received"]) / rate
+                    if rate > 0
+                    else None,
+                },
+                "overall": {
+                    "received": received_sum,
+                    "total": total_sum,
+                    "eta": eta_total,
+                },
+            }
+            if track_ctx:
+                event_data |= {"track": track_ctx}
+            asyncio.create_task(
+                self.broker.publish(
+                    {"event": "progress", "data": event_data}
+                )
+            )
+
+        def update(x: int):
+            _update_totals(x)
+            handle.update(x)
+
+        def done():
+            _update_totals(total)
+            handle.done()
+
+        return progress.Handle(update, done)
+
+
+class SavedStore:
+    def __init__(self, path: str):
+        self.path = path
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        if not os.path.exists(self.path):
+            self._write([])
+
+    def _write(self, data: list[dict]):
+        with open(self.path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def list(self) -> list[dict]:
+        try:
+            with open(self.path) as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return []
+
+    def add(self, items: Iterable[dict]):
+        existing = self.list()
+        existing.extend(items)
+        self._write(existing)
+
+    def remove(self, predicate):
+        existing = self.list()
+        filtered = [item for item in existing if not predicate(item)]
+        self._write(filtered)
+
+
+class DownloadManager:
+    def __init__(self, config_manager: StreamripConfigManager, saved_path: str):
+        self.config_manager = config_manager
+        self.event_broker = EventBroker()
+        self.progress_tap = ProgressTap(self.event_broker)
+        self.saved_store = SavedStore(saved_path)
+        self.queue: Dict[str, QueueItem] = {}
+        self.order: List[str] = []
+        self.worker: asyncio.Task | None = None
+        self.lock = asyncio.Lock()
+
+    def snapshot(self) -> list[dict]:
+        return [self._item_to_dict(self.queue[jid]) for jid in self.order]
+
+    def saved_items(self) -> list[dict]:
+        return self.saved_store.list()
+
+    def _item_to_dict(self, item: QueueItem) -> dict:
+        return {
+            "job_id": item.job_id,
+            "source": item.source,
+            "media_type": item.media_type,
+            "item_id": item.item_id,
+            "title": item.title,
+            "artist": item.artist,
+            "status": item.status,
+            "attempts": item.attempts,
+            "error": item.error,
+            "downloaded": item.downloaded,
+        }
+
+    async def enqueue(self, entries: list[dict]):
+        async with self.lock:
+            for entry in entries:
+                job_id = str(uuid.uuid4())
+                item = QueueItem(
+                    job_id=job_id,
+                    source=entry["source"],
+                    media_type=entry["media_type"],
+                    item_id=entry["id"],
+                    title=entry.get("title") or entry.get("name") or entry["id"],
+                    artist=entry.get("artist"),
+                    downloaded=entry.get("downloaded", False),
+                )
+                self.queue[job_id] = item
+                self.order.append(job_id)
+            await self.event_broker.publish(
+                {"event": "queue", "data": self.snapshot()}
+            )
+            if self.worker is None or self.worker.done():
+                self.worker = asyncio.create_task(self._worker())
+        return self.snapshot()
+
+    async def _worker(self):
+        while True:
+            async with self.lock:
+                if not self.order:
+                    return
+                job_id = self.order[0]
+            item = self.queue[job_id]
+            if item.status in {"completed", "aborted"}:
+                async with self.lock:
+                    self.order.pop(0)
+                continue
+            await self._process_item(item)
+            async with self.lock:
+                self.order.pop(0)
+                await self.event_broker.publish(
+                    {"event": "queue", "data": self.snapshot()}
+                )
+
+    async def _process_item(self, item: QueueItem):
+        item.status = "in_progress"
+        item.error = None
+        self.progress_tap.start_job(item.job_id)
+        await self.event_broker.publish(
+            {"event": "queue", "data": self.snapshot()}
+        )
+        backoff = 1.0
+        for attempt in range(5):
+            item.attempts = attempt + 1
+            token = self.progress_tap.current_job.set(item.job_id)
+            try:
+                await self._run_streamrip(item)
+                item.status = "completed"
+                item.downloaded = True
+                self.saved_store.remove(
+                    lambda saved: saved.get("id") == item.item_id
+                    and saved.get("source") == item.source
+                )
+                await self.event_broker.publish(
+                    {"event": "saved", "data": self.saved_store.list()}
+                )
+                await self.event_broker.publish(
+                    {
+                        "event": "queue",
+                        "data": self.snapshot(),
+                    }
+                )
+                self.progress_tap.finish_job(item.job_id)
+                return
+            except Exception as exc:  # noqa: BLE001
+                item.error = str(exc)
+                item.status = "retrying"
+                await self.event_broker.publish(
+                    {
+                        "event": "queue",
+                        "data": self.snapshot(),
+                        "meta": {"message": "retrying", "backoff": backoff},
+                    }
+                )
+                await asyncio.sleep(backoff)
+                backoff *= 1.5
+            finally:
+                self.progress_tap.current_job.reset(token)
+        item.status = "failed"
+        self.progress_tap.finish_job(item.job_id)
+        await self.event_broker.publish(
+            {"event": "queue", "data": self.snapshot()}
+        )
+
+    async def _run_streamrip(self, item: QueueItem):
+        config = self.config_manager.load()
+        config.file.cli.progress_bars = False
+        async with Main(config) as main:
+            await main.add_all_by_id(
+                [(item.source, item.media_type, item.item_id)]
+            )
+            await main.resolve()
+            await main.rip()
+
+    async def save_for_later(self, job_id: str | None = None, payload: dict | None = None):
+        if payload:
+            self.saved_store.add([payload])
+        elif job_id and job_id in self.queue:
+            item = self.queue[job_id]
+            self.saved_store.add(
+                [
+                    {
+                        "id": item.item_id,
+                        "source": item.source,
+                        "media_type": item.media_type,
+                        "title": item.title,
+                        "artist": item.artist,
+                    }
+                ]
+            )
+        await self.event_broker.publish(
+            {"event": "saved", "data": self.saved_store.list()}
+        )
+
+    async def retry(self, job_id: str):
+        if job_id not in self.queue:
+            return
+        item = self.queue[job_id]
+        item.status = "queued"
+        item.error = None
+        async with self.lock:
+            self.order.append(job_id)
+            if self.worker is None or self.worker.done():
+                self.worker = asyncio.create_task(self._worker())
+        await self.event_broker.publish(
+            {"event": "queue", "data": self.snapshot()}
+        )
+
+    async def abort(self, job_id: str):
+        if job_id not in self.queue:
+            return
+        item = self.queue[job_id]
+        item.status = "aborted"
+        await self.event_broker.publish(
+            {"event": "queue", "data": self.snapshot()}
+        )
+
+    async def download_saved(self, entries: list[dict] | None = None):
+        entries = entries or self.saved_store.list()
+        await self.enqueue(entries)
+        self.saved_store.remove(
+            lambda saved: any(
+                saved.get("id") == entry.get("id")
+                and saved.get("source") == entry.get("source")
+                for entry in entries
+            )
+        )
+        await self.event_broker.publish(
+            {"event": "saved", "data": self.saved_store.list()}
+        )
+
+    async def remove_saved(self, payload: dict):
+        target_id = payload.get("id")
+        source = payload.get("source")
+        self.saved_store.remove(
+            lambda saved: saved.get("id") == target_id
+            and saved.get("source") == source
+        )
+        await self.event_broker.publish(
+            {"event": "saved", "data": self.saved_store.list()}
+        )
+
+
+__all__ = ["DownloadManager", "QueueItem"]
