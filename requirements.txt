@@ -1,0 +1,3 @@
+streamrip
+
+#git+https://github.com/nathom/streamrip.git@dev
