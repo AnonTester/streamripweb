@@ -481,7 +481,11 @@ class DownloadManager:
 
     async def _run_streamrip(self, item: QueueItem):
         config = self.config_manager.load()
+        # Force progress callbacks to emit for web UI without printing console status noise.
+        config.session.cli.progress_bars = True
         config.file.cli.progress_bars = True
+        config.session.cli.text_output = False
+        config.file.cli.text_output = False
         logger.debug(
             "Launching streamrip Main for job %s | source=%s media_type=%s item_id=%s",
             item.job_id,

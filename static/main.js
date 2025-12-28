@@ -175,6 +175,9 @@ const searchForm = document.getElementById('search-form');
 const queryInput = document.getElementById('search-query');
 const clearQueryBtn = document.getElementById('clear-query');
 const sourceSelect = searchForm.querySelector('select[name="source"]');
+const searchLoadingBanner = document.getElementById('search-loading');
+const searchLoadingText = document.getElementById('search-loading-text');
+const searchSubmitBtn = searchForm.querySelector('button[type="submit"]');
 
 function applyDefaultSource() {
   if (state.appSettings.defaultSource && sourceSelect) {
@@ -196,6 +199,21 @@ clearQueryBtn.addEventListener('click', () => {
 });
 toggleClearButton();
 
+function setSearchLoading(isLoading, message = 'Fetching results…') {
+  if (!searchLoadingBanner) return;
+  searchLoadingBanner.classList.toggle('hidden', !isLoading);
+  if (searchLoadingText) searchLoadingText.textContent = message;
+  if (searchSubmitBtn) {
+    searchSubmitBtn.disabled = isLoading;
+    searchSubmitBtn.textContent = isLoading ? 'Searching…' : 'Search';
+  }
+  searchForm.querySelectorAll('input, select, button').forEach((el) => {
+    if (el === clearQueryBtn) return;
+    el.disabled = isLoading;
+  });
+  document.getElementById('results-card')?.classList.remove('hidden');
+}
+
 searchForm.addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const formData = new FormData(searchForm);
@@ -203,16 +221,27 @@ searchForm.addEventListener('submit', async (ev) => {
   payload.limit = Number(payload.limit || 25);
   state.lastQuery = payload.query;
   state.hasSearched = true;
-  const res = await fetch('/api/search', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const data = await res.json();
-  state.results = data.results || [];
-  updateResultsWithHistory();
-  renderResults(state.results);
-  toast(`Loaded ${state.results.length} results`);
+  setSearchLoading(true);
+  try {
+    const res = await fetch('/api/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      throw new Error(`Search failed (${res.status})`);
+    }
+    const data = await res.json();
+    state.results = data.results || [];
+    updateResultsWithHistory();
+    renderResults(state.results);
+    toast(`Loaded ${state.results.length} results`);
+  } catch (err) {
+    console.error('Search failed', err);
+    toast('Search failed. Please try again.', 'error');
+  } finally {
+    setSearchLoading(false);
+  }
 });
 
 function buildQueueRow(item) {
