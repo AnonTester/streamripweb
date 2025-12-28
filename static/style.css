@@ -244,7 +244,7 @@ tr.failed td { background: rgba(185, 28, 28, 0.08); }
   margin-bottom: 8px;
 }
 
-.hidden { display: none; }
+.hidden { display: none !important; }
 
 .stack { display: flex; flex-direction: column; gap: 10px; }
 
