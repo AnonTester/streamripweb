@@ -26,8 +26,8 @@ except Exception:  # pragma: no cover - fallback to StreamingResponse
         return StreamingResponse(generator, media_type="text/event-stream")
 
 
-APP_VERSION = "0.1.1"
-APP_REPO = os.getenv("STREAMRIP_WEB_REPO", "nathom/streamripweb")
+APP_VERSION = "0.1.2"
+APP_REPO = os.getenv("STREAMRIP_WEB_REPO", "AnonTester/streamripweb")
 STREAMRIP_REPO = os.getenv("STREAMRIP_REPO", "nathom/streamrip")
 
 app = FastAPI(title="Streamrip Web", docs_url=None, redoc_url=None)
@@ -37,7 +37,8 @@ config_manager = StreamripConfigManager()
 data_dir = os.path.join(os.path.dirname(base_dir), "data")
 saved_path = os.path.join(data_dir, "saved_for_later.json")
 version_cache_path = os.path.join(data_dir, "version_cache.json")
-download_manager = DownloadManager(config_manager, saved_path)
+history_path = os.path.join(data_dir, "download_history.json")
+download_manager = DownloadManager(config_manager, saved_path, history_path)
 
 app.mount(
     "/static",
@@ -151,6 +152,9 @@ async def search(payload: Dict[str, Any]):
 
     config = config_manager.load()
     results: List[Dict[str, Any]] = []
+    downloaded_ids = _downloaded_ids_from_db(config.file) | set(
+        download_manager.downloaded_ids()
+    )
     async with Main(config) as main:
         client = await main.get_logged_in_client(source)
         pages = await client.search(media_type, query, limit=limit)
@@ -163,15 +167,14 @@ async def search(payload: Dict[str, Any]):
         for page in pages:
             flattened.extend(extract_items_from_page(page, source, media_type))
 
-        downloaded_ids = set()
         try:
-            downloaded_ids = {row[0] for row in main.database.downloads.all()}
+            downloaded_ids |= {str(row[0]) for row in main.database.downloads.all()}
         except Exception:
             pass
 
         for summary, raw in zip(parsed.results, flattened):
             entry = summarize_item(raw, summary, media_type, source)
-            entry["downloaded"] = summary.id in downloaded_ids
+            entry["downloaded"] = str(summary.id) in downloaded_ids or download_manager.has_downloaded(entry["source"], entry["id"])
             results.append(entry)
 
     return {"results": results}
@@ -201,6 +204,22 @@ def extract_items_from_page(page: dict, source: str, media_type: str) -> list[di
     if source == "tidal":
         return list(page.get("items", []))
     return []
+
+
+def _downloaded_ids_from_db(config) -> set[str]:
+    try:
+        db_conf = config.database
+    except AttributeError:
+        return set()
+    if not getattr(db_conf, "downloads_enabled", False):
+        return set()
+    try:
+        from streamrip import db as sr_db
+
+        downloads_db = sr_db.Downloads(db_conf.downloads_path)
+        return {str(row[0]) for row in downloads_db.all()}
+    except Exception:
+        return set()
 
 
 def _stringify_artist(value: Any) -> str | None:
@@ -254,6 +273,9 @@ def summarize_item(
         or raw.get("display_date")
         or raw.get("date")
         or raw.get("year")
+        or raw.get("album", {}).get("release_date")
+        or raw.get("album", {}).get("release_date_original")
+        or raw.get("album", {}).get("release_year")
     )
     album_type = (
         raw.get("record_type")
@@ -315,10 +337,27 @@ def _write_cache(cache: dict):
 
 async def get_version_data() -> dict:
     cache = _load_cache()
-    if cache:
-        return cache
-    await refresh_versions(force=True)
-    return _load_cache()
+    now = time.time()
+    if not cache or now - cache.get("checked_at", 0) >= 60 * 60 * 24:
+        await refresh_versions(force=True)
+        cache = _load_cache()
+
+    from streamrip import __version__ as streamrip_version
+
+    return {
+        "checked_at": cache.get("checked_at"),
+        "app": {
+            "version": APP_VERSION,
+            "latest": cache.get("app_latest"),
+            "repo": APP_REPO,
+        },
+        "streamrip": {
+            "version": streamrip_version,
+            "latest": cache.get("streamrip_latest"),
+            "source": _streamrip_install_source(),
+            "repo": STREAMRIP_REPO,
+        },
+    }
 
 
 def _http_get_json(url: str) -> dict:
@@ -375,8 +414,6 @@ async def refresh_versions(force: bool):
         if now - cache.get("checked_at", 0) < 60 * 60 * 24:
             return
 
-    from streamrip import __version__ as streamrip_version
-
     streamrip_source = _streamrip_install_source()
     app_latest = _latest_commit_sha(APP_REPO)
 
@@ -390,17 +427,8 @@ async def refresh_versions(force: bool):
 
     cache = {
         "checked_at": now,
-        "app": {
-            "version": APP_VERSION,
-            "latest": app_latest,
-            "repo": APP_REPO,
-        },
-        "streamrip": {
-            "version": streamrip_version,
-            "latest": streamrip_latest_label,
-            "source": streamrip_source,
-            "repo": STREAMRIP_REPO,
-        },
+        "app_latest": app_latest,
+        "streamrip_latest": streamrip_latest_label,
     }
     _write_cache(cache)
 

@@ -17,6 +17,8 @@ const state = {
   config: window.initialConfig || {},
   progress: {},
   appPrefs: loadAppPrefs(),
+  lastQuery: '',
+  hasSearched: false,
 };
 
 const tabs = document.querySelectorAll('.tab');
@@ -51,7 +53,23 @@ function normalizeArtist(artist) {
 
 function renderResults(results) {
   const tbody = document.querySelector('#results-table tbody');
+  const actions = document.querySelector('.results-actions');
+  const selectionGroup = document.querySelector('.selection-group');
+  const actionGroup = document.querySelector('.action-group');
+  const tableWrapper = document.querySelector('.table-wrapper');
+  const empty = document.getElementById('results-empty');
   tbody.innerHTML = '';
+  const hasResults = results.length > 0;
+  actions.hidden = !hasResults;
+  if (selectionGroup) selectionGroup.hidden = !hasResults;
+  if (actionGroup) actionGroup.hidden = !hasResults;
+  tableWrapper.hidden = !hasResults;
+  empty.hidden = hasResults || !state.hasSearched;
+  if (!hasResults && state.hasSearched) {
+    empty.textContent = state.lastQuery
+      ? `No results found for "${state.lastQuery}".`
+      : '';
+  }
   results.forEach((row, idx) => {
     const tr = document.createElement('tr');
     const isDownloaded = Boolean(row.downloaded);
@@ -63,8 +81,8 @@ function renderResults(results) {
     const downloadedPill = isDownloaded ? '<span class="pill pill-downloaded">Downloaded</span>' : '';
     tr.innerHTML = `
       <td><input type="checkbox" data-index="${idx}" ${checkboxState} title="${isDownloaded ? 'Already downloaded' : 'Select for download'}"></td>
-      <td>${row.title || row.summary} ${downloadedPill}</td>
       <td>${artist}</td>
+      <td>${row.title || row.summary} ${downloadedPill}</td>
       <td>${row.year || ''}</td>
       <td>${row.album_type || row.media_type || ''}</td>
       <td>${row.tracks || ''}</td>
@@ -146,6 +164,8 @@ searchForm.addEventListener('submit', async (ev) => {
   const formData = new FormData(searchForm);
   const payload = Object.fromEntries(formData.entries());
   payload.limit = Number(payload.limit || 25);
+  state.lastQuery = payload.query;
+  state.hasSearched = true;
   const res = await fetch('/api/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -262,10 +282,11 @@ function buildAppSettingsSection() {
 
 function renderSettings(config) {
   const container = document.getElementById('settings-form');
+  const appSettingsContainer = document.getElementById('app-settings-form');
   container.innerHTML = '';
+  appSettingsContainer.innerHTML = '';
 
-  container.appendChild(buildAppSettingsSection());
-
+  appSettingsContainer.appendChild(buildAppSettingsSection());
   Object.entries(config).forEach(([section, values]) => {
     if (section === 'toml' || section === '_modified') return;
     const sec = document.createElement('div');
@@ -410,6 +431,10 @@ document.getElementById('save-settings').addEventListener('click', async () => {
   });
   const data = await res.json();
   state.config = data;
+  toast('Settings saved');
+});
+
+document.getElementById('save-app-settings').addEventListener('click', () => {
   document.querySelectorAll('[data-app]').forEach((input) => {
     if (input.name === 'defaultSource') {
       state.appPrefs.defaultSource = input.value;
@@ -417,7 +442,7 @@ document.getElementById('save-settings').addEventListener('click', async () => {
   });
   saveAppPrefs(state.appPrefs);
   applyDefaultSource();
-  toast('Settings saved');
+  toast('App settings saved');
 });
 
 function connectSSE() {

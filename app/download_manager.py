@@ -4,8 +4,8 @@ import os
 import time
 import uuid
 from contextvars import ContextVar
-from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List
 
 from streamrip import progress
 from streamrip.media.track import Track
@@ -214,12 +214,65 @@ class SavedStore:
         self._write(filtered)
 
 
+class DownloadHistoryStore:
+    """Persist completed downloads for future highlighting."""
+
+    def __init__(self, path: str):
+        self.path = path
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        if not os.path.exists(self.path):
+            self._write([])
+
+    def _write(self, data: list[dict]):
+        with open(self.path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def list(self) -> list[dict]:
+        try:
+            with open(self.path) as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return []
+
+    def add(self, items: Iterable[dict]):
+        existing = self.list()
+        seen = {(entry.get("source"), str(entry.get("id"))) for entry in existing}
+        new_items: list[dict] = []
+        for entry in items:
+            key = (entry.get("source"), str(entry.get("id")))
+            if key in seen:
+                continue
+            seen.add(key)
+            new_items.append(
+                {
+                    "id": str(entry.get("id")),
+                    "source": entry.get("source"),
+                    "media_type": entry.get("media_type"),
+                    "title": entry.get("title"),
+                    "artist": entry.get("artist"),
+                }
+            )
+        if new_items:
+            existing.extend(new_items)
+            self._write(existing)
+
+
 class DownloadManager:
-    def __init__(self, config_manager: StreamripConfigManager, saved_path: str):
+    def __init__(
+        self,
+        config_manager: StreamripConfigManager,
+        saved_path: str,
+        history_path: str,
+    ):
         self.config_manager = config_manager
         self.event_broker = EventBroker()
         self.progress_tap = ProgressTap(self.event_broker)
         self.saved_store = SavedStore(saved_path)
+        self.history_store = DownloadHistoryStore(history_path)
+        self.downloaded_index: set[tuple[str | None, str]] = {
+            (entry.get("source"), str(entry.get("id")))
+            for entry in self.history_store.list()
+        }
         self.queue: Dict[str, QueueItem] = {}
         self.order: List[str] = []
         self.worker: asyncio.Task | None = None
@@ -230,6 +283,29 @@ class DownloadManager:
 
     def saved_items(self) -> list[dict]:
         return self.saved_store.list()
+
+    def downloaded_ids(self) -> set[str]:
+        return {entry[1] for entry in self.downloaded_index}
+
+    def has_downloaded(self, source: str, item_id: str | int) -> bool:
+        return (source, str(item_id)) in self.downloaded_index
+
+    def _record_download(self, item: QueueItem):
+        key = (item.source, str(item.item_id))
+        if key in self.downloaded_index:
+            return
+        self.downloaded_index.add(key)
+        self.history_store.add(
+            [
+                {
+                    "id": item.item_id,
+                    "source": item.source,
+                    "media_type": item.media_type,
+                    "title": item.title,
+                    "artist": item.artist,
+                }
+            ]
+        )
 
     def _item_to_dict(self, item: QueueItem) -> dict:
         return {
@@ -300,6 +376,7 @@ class DownloadManager:
                 await self._run_streamrip(item)
                 item.status = "completed"
                 item.downloaded = True
+                self._record_download(item)
                 self.saved_store.remove(
                     lambda saved: saved.get("id") == item.item_id
                     and saved.get("source") == item.source
@@ -337,7 +414,7 @@ class DownloadManager:
 
     async def _run_streamrip(self, item: QueueItem):
         config = self.config_manager.load()
-        config.file.cli.progress_bars = False
+        config.file.cli.progress_bars = True
         async with Main(config) as main:
             await main.add_all_by_id(
                 [(item.source, item.media_type, item.item_id)]

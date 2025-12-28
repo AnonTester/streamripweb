@@ -66,13 +66,14 @@
           </div>
         </form>
         <div id="results-panel">
-          <div class="results-actions">
-            <div class="selection-group">
+          <div id="results-empty" class="muted empty-state">Run a search to see results.</div>
+          <div class="results-actions" hidden>
+            <div class="selection-group" hidden>
               <button type="button" id="select-all" class="btn ghost">Select all</button>
               <button type="button" id="select-none" class="btn ghost">Select none</button>
               <button type="button" id="select-invert" class="btn ghost">Invert selection</button>
             </div>
-            <div class="action-group">
+            <div class="action-group" hidden>
               <button id="view-queue" class="btn ghost" type="button" hidden>View download queue</button>
               <button id="download-btn" class="btn success" hidden>Download selected</button>
             </div>
@@ -82,8 +83,8 @@
               <thead>
                 <tr>
                   <th></th>
-                  <th>Title</th>
                   <th>Artist</th>
+                  <th>Title</th>
                   <th>Year</th>
                   <th>Type</th>
                   <th>Tracks</th>
@@ -119,6 +120,17 @@
     </section>
 
     <section id="tab-settings" class="tab-pane">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2>App preferences</h2>
+            <p>Local-only settings that control this web UI.</p>
+          </div>
+          <button id="save-app-settings" class="btn primary">Save app settings</button>
+        </div>
+        <div id="app-settings-form" class="settings-grid"></div>
+      </div>
+
       <div class="card">
         <div class="card-header">
           <div>
