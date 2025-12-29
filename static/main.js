@@ -16,6 +16,24 @@ const DEFAULT_APP_SETTINGS = {
   port: 8500,
 };
 
+function normalizePort(value) {
+  const num = Number(value);
+  return Number.isFinite(num) && num > 0 ? num : DEFAULT_APP_SETTINGS.port;
+}
+
+function buildInitialAppSettings() {
+  const merged = {
+    ...DEFAULT_APP_SETTINGS,
+    ...(window.initialAppSettings || {}),
+    ...loadAppPrefs(),
+  };
+  return {
+    ...merged,
+    defaultSource: merged.defaultSource || DEFAULT_APP_SETTINGS.defaultSource,
+    port: normalizePort(merged.port),
+  };
+}
+
 const state = {
   results: [],
   queue: [],
@@ -23,11 +41,7 @@ const state = {
   config: window.initialConfig || {},
   progress: {},
   history: window.initialHistory || [],
-  appSettings: {
-    ...DEFAULT_APP_SETTINGS,
-    ...(window.initialAppSettings || {}),
-    ...loadAppPrefs(),
-  },
+  appSettings: buildInitialAppSettings(),
   lastQuery: '',
   hasSearched: false,
   currentSource: '',
@@ -38,6 +52,8 @@ const state = {
   activeSettingsTab: 'web',
   unsavedSettings: false,
 };
+
+let queuePollTimer = null;
 
 const SETTINGS_GROUPS = {
   web: {
@@ -919,7 +935,8 @@ function renderQueue(queue, progressMap, history) {
     state.history = history;
   }
   state.queue = incomingQueue;
-  if (state.queue.length) {
+  const hasQueue = state.queue.length > 0;
+  if (hasQueue) {
     document.getElementById('results-card')?.classList.remove('hidden');
   }
   const queueLists = document.querySelectorAll('[data-queue-list]');
@@ -945,7 +962,15 @@ function renderQueue(queue, progressMap, history) {
   if (resultsUpdated || historyUpdated) {
     renderResults(state.results);
   }
+  if (!hasQueue) {
+    stopQueuePolling();
+  } else {
+    scheduleQueuePolling();
+  }
   handleQueueCompletion(prevQueue);
+  if (!prevQueue.length && hasQueue) {
+    refreshQueue();
+  }
 }
 
 function renderSaved(saved) {
@@ -1280,7 +1305,11 @@ async function saveAllSettings(showToast = true) {
     }
   }
   if (Object.keys(appPayload).length) {
-    const mergedApp = { ...state.appSettings, ...appPayload };
+    const mergedApp = {
+      ...state.appSettings,
+      ...appPayload,
+      port: normalizePort(appPayload.port ?? state.appSettings.port),
+    };
     state.appSettings = mergedApp;
     saveAppPrefs(state.appSettings);
     const res = await fetch('/api/app-settings', {
@@ -1291,7 +1320,7 @@ async function saveAllSettings(showToast = true) {
     if (res.ok) {
       const saved = await res.json();
       state.appSettings = Object.keys(saved || {}).length
-        ? { ...DEFAULT_APP_SETTINGS, ...saved, ...loadAppPrefs() }
+        ? { ...DEFAULT_APP_SETTINGS, ...saved, ...loadAppPrefs(), port: normalizePort(saved?.port) }
         : mergedApp;
     } else {
       state.appSettings = mergedApp;
@@ -1384,11 +1413,7 @@ function handleUnsavedCancel() {
 }
 
 async function hydrateAppSettings() {
-  const basePrefs = {
-    ...DEFAULT_APP_SETTINGS,
-    ...(window.initialAppSettings || {}),
-    ...loadAppPrefs(),
-  };
+  const basePrefs = buildInitialAppSettings();
   state.appSettings = { ...basePrefs };
   try {
     const res = await fetch('/api/app-settings');
@@ -1398,22 +1423,21 @@ async function hydrateAppSettings() {
         ...DEFAULT_APP_SETTINGS,
         ...data,
         ...loadAppPrefs(),
+        port: normalizePort(data?.port),
       };
     }
   } catch (err) {
     console.error('Failed to load app settings', err);
     state.appSettings = { ...basePrefs };
   }
+  state.appSettings.port = normalizePort(state.appSettings.port);
+  if (!state.appSettings.defaultSource) {
+    state.appSettings.defaultSource = DEFAULT_APP_SETTINGS.defaultSource;
+  }
 }
 
 async function initializeSettingsState() {
   await hydrateAppSettings();
-  if (!state.appSettings.port) {
-    state.appSettings.port = 8500;
-  }
-  if (!state.appSettings.defaultSource) {
-    state.appSettings.defaultSource = 'qobuz';
-  }
   buildSettingsSections();
   setActiveSettingsTab(state.activeSettingsTab || 'web');
   const saveBtn = document.getElementById('save-settings');
@@ -1520,6 +1544,7 @@ async function refreshSaved() {
 }
 
 async function refreshQueue() {
+  if (!shouldPollQueue()) return;
   try {
     const res = await fetch('/api/queue');
     const data = await res.json();
@@ -1527,6 +1552,27 @@ async function refreshQueue() {
   } catch (err) {
     console.error('Failed to refresh queue', err);
   }
+}
+
+function shouldPollQueue() {
+  const hasQueue = Array.isArray(state.queue) && state.queue.length > 0;
+  return hasQueue && !document.hidden;
+}
+
+function stopQueuePolling() {
+  if (queuePollTimer) {
+    clearInterval(queuePollTimer);
+    queuePollTimer = null;
+  }
+}
+
+function scheduleQueuePolling() {
+  if (!shouldPollQueue()) {
+    stopQueuePolling();
+    return;
+  }
+  if (queuePollTimer) return;
+  queuePollTimer = setInterval(() => refreshQueue(), 6000);
 }
 
 function setActiveTab(tabId) {
@@ -1710,5 +1756,14 @@ function connectSSE() {
 }
 
 connectSSE();
-setInterval(refreshQueue, 6000);
+scheduleQueuePolling();
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopQueuePolling();
+    return;
+  }
+  refreshQueue();
+  scheduleQueuePolling();
+});
 toggleUrlButton();

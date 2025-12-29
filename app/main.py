@@ -4,6 +4,7 @@ import logging
 import os
 import subprocess
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from urllib.request import Request as UrlRequest, urlopen
@@ -32,7 +33,7 @@ def sse_response(generator, *, formatted: bool = False):
     return StreamingResponse(generator, media_type="text/event-stream")
 
 
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 APP_REPO = os.getenv("STREAMRIP_WEB_REPO", "AnonTester/streamripweb")
 STREAMRIP_REPO = os.getenv("STREAMRIP_REPO", "nathom/streamrip")
 data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
@@ -45,7 +46,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger("streamripweb")
 
-app = FastAPI(title="Streamrip Web", docs_url=None, redoc_url=None)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    Path(data_dir).mkdir(parents=True, exist_ok=True)
+    Path(app_settings_path).parent.mkdir(parents=True, exist_ok=True)
+    app.state.app_settings = load_app_settings()
+    _apply_logging_preferences(app.state.app_settings)
+    from streamrip import __version__ as streamrip_version
+
+    await refresh_versions(force=False, streamrip_version=streamrip_version)
+    yield
+
+
+app = FastAPI(title="Streamrip Web", docs_url=None, redoc_url=None, lifespan=lifespan)
 base_dir = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(base_dir, "..", "templates"))
 config_manager = StreamripConfigManager()
@@ -59,17 +73,6 @@ app.mount(
     StaticFiles(directory=os.path.join(base_dir, "..", "static")),
     name="static",
 )
-
-
-@app.on_event("startup")
-async def on_startup():
-    Path(data_dir).mkdir(parents=True, exist_ok=True)
-    Path(app_settings_path).parent.mkdir(parents=True, exist_ok=True)
-    app.state.app_settings = load_app_settings()
-    _apply_logging_preferences(app.state.app_settings)
-    from streamrip import __version__ as streamrip_version
-
-    await refresh_versions(force=False, streamrip_version=streamrip_version)
 
 
 @app.get("/", response_class=HTMLResponse)
