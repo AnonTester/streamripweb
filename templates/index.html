@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Streamrip Web</title>
+  <title>StreamRIP Web</title>
   <link rel="stylesheet" href="/static/style.css?v={{ app_version }}">
   <link rel="icon" type="image/png" href="/static/favicon.png">
 </head>
 <body>
   <header class="header">
     <div>
-        <h1><img src="/static/logo.png" width="32" height="32" border="0"> Streamrip Web</h1>
+        <h1><img src="/static/logo.png" width="32" height="32" border="0"> StreamRIP Web</h1>
       <p class="subtitle">Full-featured web UI for the streamrip module</p>
     </div>
   </header>
@@ -204,24 +204,31 @@
   <script src="/static/main.js?v={{ app_version }}"></script>
   <footer class="footer" aria-label="Version information">
     <div>
-      <strong>App</strong>
       <div class="muted">
+        <strong>StreamRIP Web</strong>
         v<a href="https://github.com/{{ versions.app.repo }}" target="_blank" rel="noreferrer noopener">{{ versions.app.version }}</a>
-        · Latest
-        <a href="https://github.com/{{ versions.app.repo }}" target="_blank" rel="noreferrer noopener">
-          {{ versions.app.latest or 'unknown' }}
+        {% if versions.app.update_available and versions.app.latest %}
+        · Update available:
+        <a href="https://github.com/{{ versions.app.repo }}/commit/{{ versions.app.latest }}" target="_blank" rel="noreferrer noopener">
+          {{ versions.app.latest_label }}
         </a>
+        {% endif %}
       </div>
     </div>
     <div>
-      <strong>streamrip</strong>
       <div class="muted">
+        <strong>streamrip</strong>
         v<a href="https://github.com/{{ versions.streamrip.repo }}" target="_blank" rel="noreferrer noopener">{{ versions.streamrip.version }}</a>
-        · Latest
-        <a href="https://github.com/{{ versions.streamrip.repo }}" target="_blank" rel="noreferrer noopener">
-          {{ versions.streamrip.latest or 'unknown' }}
-        </a>
+        {% if versions.streamrip.git_commit %}
+          ({{ versions.streamrip.git_commit }})
+        {% endif %}
         · {{ versions.streamrip.source }}
+        {% if versions.streamrip.update_available and versions.streamrip.latest %}
+        · Update available:
+        <a href="{{ versions.streamrip.latest_url or ('https://github.com/' ~ versions.streamrip.repo ~ '/commit/' ~ versions.streamrip.latest) }}" target="_blank" rel="noreferrer noopener">
+          {{ versions.streamrip.latest_label }}
+        </a>
+        {% endif %}
       </div>
     </div>
   </footer>

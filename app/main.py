@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -11,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from packaging import version
 
 from .config_manager import StreamripConfigManager
 from .download_manager import DownloadManager
@@ -30,7 +32,7 @@ def sse_response(generator, *, formatted: bool = False):
     return StreamingResponse(generator, media_type="text/event-stream")
 
 
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.4.2"
 APP_REPO = os.getenv("STREAMRIP_WEB_REPO", "AnonTester/streamripweb")
 STREAMRIP_REPO = os.getenv("STREAMRIP_REPO", "nathom/streamrip")
 data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
@@ -65,7 +67,9 @@ async def on_startup():
     Path(app_settings_path).parent.mkdir(parents=True, exist_ok=True)
     app.state.app_settings = load_app_settings()
     _apply_logging_preferences(app.state.app_settings)
-    await refresh_versions(force=False)
+    from streamrip import __version__ as streamrip_version
+
+    await refresh_versions(force=False, streamrip_version=streamrip_version)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -435,10 +439,13 @@ async def get_version_data() -> dict:
     cache = _load_cache()
     now = time.time()
     if not cache or now - cache.get("checked_at", 0) >= 60 * 60 * 24:
-        await refresh_versions(force=True)
+        from streamrip import __version__ as streamrip_version
+
+        await refresh_versions(force=True, streamrip_version=streamrip_version)
         cache = _load_cache()
 
     from streamrip import __version__ as streamrip_version
+    streamrip_source, streamrip_commit = _streamrip_install_details()
 
     return {
         "checked_at": cache.get("checked_at"),
@@ -446,12 +453,22 @@ async def get_version_data() -> dict:
             "version": APP_VERSION,
             "latest": cache.get("app_latest"),
             "repo": APP_REPO,
+            "update_available": bool(cache.get("app_update")),
+            "latest_label": _short_sha(cache.get("app_latest")) or cache.get("app_latest"),
         },
         "streamrip": {
             "version": streamrip_version,
             "latest": cache.get("streamrip_latest"),
-            "source": _streamrip_install_source(),
+            "latest_label": (
+                _short_sha(cache.get("streamrip_latest"))
+                if streamrip_source == "git"
+                else cache.get("streamrip_latest")
+            ),
+            "latest_url": cache.get("streamrip_latest_url"),
+            "source": streamrip_source,
+            "git_commit": _short_sha(streamrip_commit),
             "repo": STREAMRIP_REPO,
+            "update_available": bool(cache.get("streamrip_update")),
         },
     }
 
@@ -482,49 +499,90 @@ def _latest_release(repo: str) -> Tuple[str | None, str | None]:
         return None, None
 
 
-def _streamrip_install_source() -> str:
-    """Return 'git' if installed from VCS, else 'release'."""
+def _short_sha(sha: str | None) -> str | None:
+    if not sha:
+        return None
+    return sha[:7]
+
+
+def _run_git_command(args: list[str], cwd: Path) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return completed.stdout.strip()
+    except Exception:
+        return None
+
+
+def _local_app_commit() -> str | None:
+    repo_root = Path(__file__).resolve().parent.parent
+    return _run_git_command(["rev-parse", "HEAD"], cwd=repo_root)
+
+
+def _streamrip_install_details() -> Tuple[str, str | None]:
+    """Return install source and git commit (if available)."""
     try:
         import importlib.util
 
         spec = importlib.util.find_spec("streamrip")
         if spec is None or spec.origin is None:
-            return "release"
+            return "release", None
         pkg_path = Path(spec.origin).parent
         for candidate in pkg_path.glob("streamrip-*.dist-info/direct_url.json"):
             try:
                 data = json.loads(candidate.read_text())
-                if data.get("vcs_info"):
-                    return "git"
+                vcs_info = data.get("vcs_info")
+                if vcs_info:
+                    return "git", vcs_info.get("commit_id")
             except Exception:
                 continue
     except Exception:
-        return "release"
-    return "release"
+        return "release", None
+    return "release", None
 
 
-async def refresh_versions(force: bool):
+async def refresh_versions(force: bool, streamrip_version: str | None = None):
     cache = _load_cache()
     now = time.time()
     if cache and not force:
         if now - cache.get("checked_at", 0) < 60 * 60 * 24:
             return
+    streamrip_version = streamrip_version or None
 
-    streamrip_source = _streamrip_install_source()
+    streamrip_source, streamrip_commit = _streamrip_install_details()
+    app_local_commit = _local_app_commit()
     app_latest = _latest_commit_sha(APP_REPO)
+    app_update = bool(app_local_commit and app_latest and app_latest != app_local_commit)
+
+    streamrip_latest = None
+    streamrip_latest_url = None
+    streamrip_update = False
 
     if streamrip_source == "git":
         streamrip_latest = _latest_commit_sha(STREAMRIP_REPO)
-        streamrip_latest_label = streamrip_latest
+        streamrip_update = bool(streamrip_commit and streamrip_latest and streamrip_commit != streamrip_latest)
     else:
         tag, url = _latest_release(STREAMRIP_REPO)
         streamrip_latest = tag
-        streamrip_latest_label = tag or "unknown"
+        streamrip_latest_url = url
+        try:
+            if streamrip_version and tag:
+                streamrip_update = version.parse(tag) > version.parse(streamrip_version)
+        except Exception:
+            streamrip_update = False
 
     cache = {
         "checked_at": now,
         "app_latest": app_latest,
-        "streamrip_latest": streamrip_latest_label,
+        "app_update": app_update,
+        "streamrip_latest": streamrip_latest,
+        "streamrip_update": streamrip_update,
+        "streamrip_latest_url": streamrip_latest_url,
     }
     _write_cache(cache)
 
