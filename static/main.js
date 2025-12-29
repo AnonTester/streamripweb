@@ -27,6 +27,9 @@ const state = {
 };
 
 const tabs = document.querySelectorAll('.tab');
+const savedTabButton = document.querySelector('.tab[data-tab="saved"]');
+const savedTabPane = document.getElementById('tab-saved');
+const savedActions = document.querySelector('.saved-actions');
 tabs.forEach((tab) => {
   tab.addEventListener('click', () => {
     tabs.forEach((t) => t.classList.remove('active'));
@@ -196,6 +199,7 @@ const searchSubmitBtn = searchForm.querySelector('button[type="submit"]');
 const urlInput = document.getElementById('url-input');
 const urlDownloadBtn = document.getElementById('url-download-btn');
 const urlQueueCard = document.getElementById('url-queue-card');
+const urlActions = document.querySelector('.url-actions');
 
 function applyDefaultSource() {
   if (state.appSettings.defaultSource && sourceSelect) {
@@ -354,8 +358,20 @@ function renderSaved(saved) {
   list.innerHTML = '';
   if (!saved.length) {
     list.innerHTML = '<p class="muted">No saved items yet.</p>';
+    savedActions?.classList.add('hidden');
+    savedTabButton?.classList.add('hidden');
+    savedTabButton?.classList.remove('active');
+    savedTabPane?.classList.add('hidden');
+    savedTabPane?.classList.remove('active');
+    if (state.activeTab === 'saved') {
+      const searchTab = document.querySelector('.tab[data-tab="search"]');
+      searchTab?.click();
+    }
     return;
   }
+  savedActions?.classList.remove('hidden');
+  savedTabButton?.classList.remove('hidden');
+  savedTabPane?.classList.remove('hidden');
   saved.forEach((item, idx) => {
     const row = document.createElement('div');
     row.className = 'queue-item';
@@ -634,6 +650,7 @@ function handleQueueCompletion(prevQueue) {
       if (urlDownloadBtn) {
         urlDownloadBtn.disabled = true;
       }
+      toggleUrlButton();
       urlQueueCard?.classList.add('hidden');
       state.activeQueueJobIds = new Set();
     }
@@ -656,7 +673,10 @@ function handleQueueCompletion(prevQueue) {
 function toggleUrlButton() {
   if (!urlInput || !urlDownloadBtn) return;
   const lines = (urlInput.value || '').split('\n').map((v) => v.trim()).filter(Boolean);
-  urlDownloadBtn.disabled = lines.length === 0;
+  const hasUrls = lines.length > 0;
+  urlDownloadBtn.disabled = !hasUrls;
+  urlDownloadBtn.classList.toggle('hidden', !hasUrls);
+  urlActions?.classList.toggle('hidden', !hasUrls);
 }
 
 if (urlInput) {

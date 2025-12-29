@@ -18,7 +18,10 @@
   <nav class="tabs">
     <button class="tab active" data-tab="search">Search</button>
     <button class="tab" data-tab="url">URL</button>
-    <button class="tab" data-tab="saved">Saved for later</button>
+    <button class="tab" data-tab="saved">
+      <span class="tab-label-full">Saved for later</span>
+      <span class="tab-label-short">Later</span>
+    </button>
     <button class="tab" data-tab="settings">Settings</button>
   </nav>
 
@@ -129,11 +132,13 @@
             <h2>Download by URL</h2>
             <p>Paste one or multiple URLs (one per line) to enqueue downloads directly.</p>
           </div>
-          <button id="url-download-btn" class="btn primary" disabled>Download URLs</button>
         </div>
         <label class="query-label" for="url-input">URLs</label>
         <textarea id="url-input" rows="6" placeholder="https://...&#10;https://..." aria-label="URL list"></textarea>
         <p class="muted">Supported streamrip URLs. The queue will show progress and any errors.</p>
+        <div class="form-actions url-actions">
+          <button id="url-download-btn" class="btn primary" disabled>Download URLs</button>
+        </div>
       </div>
       <div class="card hidden" id="url-queue-card" data-queue-panel="url">
         <div class="card-header">
@@ -153,9 +158,11 @@
             <h2>Saved for later</h2>
             <p>Persisted items that failed or were deferred. Launch downloads anytime.</p>
           </div>
-          <button id="download-saved" class="btn primary">Download all saved</button>
         </div>
         <div id="saved-list" class="stack"></div>
+        <div class="form-actions saved-actions">
+          <button id="download-saved" class="btn primary">Download all saved</button>
+        </div>
       </div>
     </section>
 

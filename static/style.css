@@ -85,6 +85,20 @@ header.header {
   cursor: pointer;
 }
 
+.tab-label-short {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .tab-label-full {
+    display: none;
+  }
+
+  .tab-label-short {
+    display: inline;
+  }
+}
+
 .tabs .tab.active {
   background: linear-gradient(135deg, var(--accent), #22c55e);
   color: var(--accent-contrast);
@@ -376,6 +390,15 @@ tr.failed td { background: rgba(185, 28, 28, 0.08); }
 }
 
 .action-row { flex-direction: row !important; flex-wrap: wrap; }
+
+.saved-actions {
+  margin-top: 12px;
+}
+
+.url-actions {
+  margin-top: 12px;
+  justify-content: flex-start;
+}
 
 .empty-state {
   border: 1px dashed var(--border);
