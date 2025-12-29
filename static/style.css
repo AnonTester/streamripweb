@@ -437,3 +437,224 @@ tr.failed td { background: rgba(185, 28, 28, 0.08); }
     transform: rotate(360deg);
   }
 }
+
+body.modal-open {
+  overflow: hidden;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 1000;
+}
+
+.modal .modal-content {
+  width: min(560px, 100%);
+  background: var(--card);
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header {
+  padding: 16px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.modal-actions-inline {
+  padding: 0 16px 16px;
+  justify-content: flex-end;
+}
+
+.settings-modal-body {
+  padding: 16px;
+  display: flex;
+  gap: 16px;
+  overflow: hidden;
+  flex: 1;
+  background: var(--card);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.settings-shell {
+  margin-top: 12px;
+}
+
+.settings-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 220px;
+}
+
+.settings-tab {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  padding: 10px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  text-align: left;
+  font-weight: 700;
+}
+
+.settings-tab.active {
+  background: linear-gradient(135deg, var(--accent), #22c55e);
+  color: var(--accent-contrast);
+  border-color: transparent;
+}
+
+.settings-panels {
+  flex: 1;
+  height: 100%;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-group-intro {
+  padding: 4px 0 4px 4px;
+}
+
+.settings-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.settings-card-header {
+  margin-bottom: 8px;
+}
+
+.settings-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.setting-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+}
+
+.setting-field.is-checkbox {
+  gap: 4px;
+}
+
+.setting-field.has-error {
+  border-color: var(--danger);
+}
+
+.setting-field label {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.setting-field input,
+.setting-field select,
+.setting-field textarea {
+  width: 100%;
+}
+
+.setting-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.setting-checkbox-row input[type="checkbox"] {
+  width: auto;
+}
+
+.help-text {
+  font-size: 13px;
+}
+
+.field-error {
+  color: var(--danger);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.settings-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.settings-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-pill-grid {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pill-info {
+  background: rgba(37, 99, 235, 0.12);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.alert {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.alert-warning {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.6);
+}
+
+@media (max-width: 900px) {
+  .settings-modal-body {
+    flex-direction: column;
+  }
+
+  .settings-tabs {
+    flex-direction: row;
+    min-width: 0;
+    overflow-x: auto;
+  }
+
+  .settings-panels {
+    max-height: 60vh;
+  }
+}

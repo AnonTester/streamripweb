@@ -170,28 +170,51 @@
       <div class="card">
         <div class="card-header">
           <div>
-            <h2>App preferences</h2>
-            <p>Local-only settings that control this web UI.</p>
-          </div>
-          <button id="save-app-settings" class="btn primary">Save app settings</button>
-        </div>
-        <div id="app-settings-form" class="settings-grid"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <div>
             <h2>Settings</h2>
-            <p>Edit any streamrip configuration value. Sections mirror the config file.</p>
           </div>
-          <button id="save-settings" class="btn primary">Save settings</button>
+          <div class="settings-header-actions">
+            <button id="discard-settings" class="btn ghost hidden">Discard changes</button>
+            <button id="save-settings" class="btn primary hidden" disabled>Save changes</button>
+          </div>
         </div>
-        <div id="settings-form" class="settings-grid"></div>
+        <div id="download-folder-warning" class="alert alert-warning hidden">
+          A download folder is required before leaving settings. Please set one in the Download group.
+        </div>
+        <div class="settings-shell">
+          <div class="settings-modal-body">
+            <div class="settings-tabs" role="tablist" aria-orientation="vertical" id="settings-tablist">
+              <button class="settings-tab active" id="settings-tab-web" role="tab" aria-selected="true" data-settings-tab="web">StreamRIP Web</button>
+              <button class="settings-tab" id="settings-tab-download" role="tab" aria-selected="false" data-settings-tab="download">Download</button>
+              <button class="settings-tab" id="settings-tab-sources" role="tab" aria-selected="false" data-settings-tab="sources">Sources</button>
+            </div>
+            <div class="settings-panels" id="settings-panels">
+              <div class="settings-group" data-settings-panel="web" role="tabpanel" aria-labelledby="settings-tab-web"></div>
+              <div class="settings-group hidden" data-settings-panel="download" role="tabpanel" aria-labelledby="settings-tab-download"></div>
+              <div class="settings-group hidden" data-settings-panel="sources" role="tabpanel" aria-labelledby="settings-tab-sources"></div>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
   </main>
 
   <div id="toast-container" aria-live="polite"></div>
+
+  <div id="unsaved-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="unsaved-modal-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <h3 id="unsaved-modal-title">Unsaved changes</h3>
+          <p class="muted" id="unsaved-modal-message">You have unsaved changes. Save or discard them?</p>
+        </div>
+      </div>
+      <div class="modal-actions modal-actions-inline">
+        <button id="unsaved-cancel" class="btn ghost">Cancel</button>
+        <button id="unsaved-discard" class="btn">Discard</button>
+        <button id="unsaved-save" class="btn primary">Save &amp; continue</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     window.initialConfig = {{ config | tojson }};
@@ -200,6 +223,7 @@
     window.initialAppSettings = {{ app_settings | tojson }};
     window.versionInfo = {{ versions | tojson }};
     window.appVersion = {{ app_version | tojson }};
+    window.requireDownloadFolder = {{ require_download_folder | tojson }};
   </script>
   <script src="/static/main.js?v={{ app_version }}"></script>
   <footer class="footer" aria-label="Version information">

@@ -15,9 +15,11 @@ class StreamripConfigManager:
 
     def __init__(self, path: str | None = None):
         self.path = path or DEFAULT_CONFIG_PATH
+        self.created_default_config = False
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         if not os.path.exists(self.path):
             set_user_defaults(self.path)
+            self.created_default_config = True
 
     def load(self) -> Config:
         try:
