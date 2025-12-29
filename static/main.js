@@ -54,6 +54,7 @@ const state = {
 };
 
 let queuePollTimer = null;
+let queueRequestController = null;
 
 const SETTINGS_GROUPS = {
   web: {
@@ -1543,36 +1544,62 @@ async function refreshSaved() {
   renderSaved(data.saved || []);
 }
 
-async function refreshQueue() {
-  if (!shouldPollQueue()) return;
-  try {
-    const res = await fetch('/api/queue');
-    const data = await res.json();
-    renderQueue(data.queue || [], data.progress, data.history);
-  } catch (err) {
-    console.error('Failed to refresh queue', err);
+function cancelQueueRequest() {
+  if (queueRequestController) {
+    queueRequestController.abort();
+    queueRequestController = null;
   }
+}
+
+function isTabVisible() {
+  return document.visibilityState === 'visible' && !document.hidden;
 }
 
 function shouldPollQueue() {
   const hasQueue = Array.isArray(state.queue) && state.queue.length > 0;
-  return hasQueue && !document.hidden;
+  return hasQueue && isTabVisible();
+}
+
+async function refreshQueue() {
+  if (!shouldPollQueue()) {
+    stopQueuePolling();
+    return;
+  }
+  cancelQueueRequest();
+  queueRequestController = new AbortController();
+  try {
+    const res = await fetch('/api/queue', { signal: queueRequestController.signal });
+    const data = await res.json();
+    renderQueue(data.queue || [], data.progress, data.history);
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    console.error('Failed to refresh queue', err);
+  } finally {
+    queueRequestController = null;
+  }
 }
 
 function stopQueuePolling() {
+  cancelQueueRequest();
   if (queuePollTimer) {
-    clearInterval(queuePollTimer);
+    clearTimeout(queuePollTimer);
     queuePollTimer = null;
   }
 }
 
 function scheduleQueuePolling() {
+  if (queuePollTimer) {
+    clearTimeout(queuePollTimer);
+    queuePollTimer = null;
+  }
   if (!shouldPollQueue()) {
     stopQueuePolling();
     return;
   }
-  if (queuePollTimer) return;
-  queuePollTimer = setInterval(() => refreshQueue(), 6000);
+  queuePollTimer = setTimeout(async () => {
+    await refreshQueue();
+    scheduleQueuePolling();
+  }, 6000);
 }
 
 function setActiveTab(tabId) {
