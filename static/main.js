@@ -721,6 +721,7 @@ function updateColumnVisibility() {
     switch (state.currentMediaType) {
       case 'track':
         hideAll.tracks = true;
+        hideAll.year = true;
         break;
       case 'artist':
         hideAll.artist = true;
@@ -861,7 +862,6 @@ function applyDefaultSource() {
   }
   if (sourceSelect) {
     state.currentSource = sourceSelect.value;
-    updateColumnVisibility();
   }
 }
 
@@ -870,14 +870,12 @@ applyDefaultSource();
 if (sourceSelect) {
   sourceSelect.addEventListener('change', () => {
     state.currentSource = sourceSelect.value;
-    updateColumnVisibility();
   });
 }
 
 if (mediaTypeSelect) {
   mediaTypeSelect.addEventListener('change', () => {
     state.currentMediaType = mediaTypeSelect.value;
-    updateColumnVisibility();
   });
 }
 
