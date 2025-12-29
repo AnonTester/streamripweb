@@ -387,6 +387,11 @@ tr.failed td { background: rgba(185, 28, 28, 0.08); }
   border-radius: 12px;
   box-shadow: var(--shadow);
   flex-wrap: wrap;
+  font-size: 0.7rem;
+}
+
+.footer a, .footer a:visited {
+  color: var(--muted);
 }
 
 .action-row { flex-direction: row !important; flex-wrap: wrap; }
@@ -485,25 +490,19 @@ body.modal-open {
 }
 
 .settings-modal-body {
-  padding: 16px;
   display: flex;
   gap: 16px;
   overflow: hidden;
   flex: 1;
-  background: var(--card);
-  border-radius: 12px;
-  border: 1px solid var(--border);
-}
-
-.settings-shell {
-  margin-top: 12px;
 }
 
 .settings-tabs {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-width: 220px;
+  min-width: 124px;
+  margin-left: 4px;
+  margin-top: 5px;
 }
 
 .settings-tab {
@@ -651,7 +650,11 @@ body.modal-open {
   .settings-tabs {
     flex-direction: row;
     min-width: 0;
-    overflow-x: auto;
+    gap: 6px;
+  }
+
+  .settings-tab {
+    padding: 4px 7px;
   }
 
   .settings-panels {
