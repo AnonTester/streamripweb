@@ -726,12 +726,14 @@ function updateColumnVisibility() {
       case 'artist':
         hideAll.artist = true;
         hideAll.tracks = true;
+        hideAll.year = true;
         break;
       case 'album':
         hideAll.year = true;
         break;
       case 'playlist':
         hideAll.artist = true;
+        hideAll.year = true;
         break;
       default:
         break;
