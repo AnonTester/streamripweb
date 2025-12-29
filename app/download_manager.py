@@ -108,13 +108,18 @@ class ProgressTap:
         self.latest_progress: dict[str, dict[str, Any]] = {}
         self._patch()
 
+    def _normalize_track_id(self, track_id: str | int | None) -> str | None:
+        if track_id is None:
+            return None
+        return str(track_id)
+
     def _patch(self):
         progress.get_progress_callback = self._patched_get_progress
         tap = self
 
         async def patched_pending_resolve(self_ref: PendingTrack, *args, **kwargs):
             job_id = tap.current_job.get()
-            track_id = getattr(self_ref, "id", None)
+            track_id = tap._normalize_track_id(getattr(self_ref, "id", None))
             track_ctx = {
                 "track_id": track_id,
                 "album": getattr(self_ref.album, "album", None),
@@ -178,7 +183,9 @@ class ProgressTap:
                 return None
 
             track_ctx = {
-                "track_id": getattr(track.meta.info, "id", track_id),
+                "track_id": tap._normalize_track_id(
+                    getattr(track.meta.info, "id", track_id)
+                ),
                 "title": track.meta.title,
                 "album": getattr(track.meta.album, "album", None),
                 "tracknumber": track.meta.tracknumber,
@@ -198,7 +205,7 @@ class ProgressTap:
 
         async def patched_single_resolve(self_ref: PendingSingle, *args, **kwargs):
             job_id = tap.current_job.get()
-            track_id = getattr(self_ref, "id", None)
+            track_id = tap._normalize_track_id(getattr(self_ref, "id", None))
             track_ctx = {
                 "track_id": track_id,
                 "album": None,
@@ -262,7 +269,9 @@ class ProgressTap:
                 return None
 
             track_ctx = {
-                "track_id": getattr(track.meta.info, "id", track_id),
+                "track_id": tap._normalize_track_id(
+                    getattr(track.meta.info, "id", track_id)
+                ),
                 "title": track.meta.title,
                 "album": getattr(track.meta.album, "album", None),
                 "tracknumber": track.meta.tracknumber,
@@ -290,7 +299,7 @@ class ProgressTap:
                 getattr(self_ref.meta.info, "id", None),
             )
             track_info = {
-                "track_id": self_ref.meta.info.id,
+                "track_id": tap._normalize_track_id(self_ref.meta.info.id),
                 "title": self_ref.meta.title,
                 "album": getattr(self_ref.meta.album, "album", None),
                 "tracknumber": self_ref.meta.tracknumber,
@@ -421,12 +430,21 @@ class ProgressTap:
             {"tracks": {}, "started_at": started, "finished": False},
         )
         initial_track_ctx = self.current_track.get()
-        track_id = initial_track_ctx.get("track_id") if initial_track_ctx else desc
+        track_id = (
+            self._normalize_track_id(initial_track_ctx.get("track_id"))
+            if initial_track_ctx
+            else desc
+        )
 
         def _update_totals(increment: int):
             # Track context may change while the download is in flight (e.g., retries).
             # Always pull the latest context so the UI stays in sync.
             track_ctx = self.current_track.get() or initial_track_ctx
+            if track_ctx:
+                track_ctx = dict(track_ctx)
+                track_ctx["track_id"] = self._normalize_track_id(
+                    track_ctx.get("track_id")
+                )
             track_state = state["tracks"].setdefault(
                 track_id,
                 {
@@ -512,6 +530,7 @@ class ProgressTap:
             job_id,
             {"tracks": {}, "started_at": time.monotonic(), "finished": False},
         )
+        track_id = self._normalize_track_id(track_id)
         state["tracks"][track_id] = track_state
         received_sum = sum(t.get("received", 0) for t in state["tracks"].values())
         total_sum = sum(self._effective_total(t) for t in state["tracks"].values()) or (
@@ -579,6 +598,10 @@ class ProgressTap:
     ):
         if job_id is None or track_id is None:
             return
+        track_id = self._normalize_track_id(track_id)
+        if track_ctx:
+            track_ctx = dict(track_ctx)
+            track_ctx["track_id"] = self._normalize_track_id(track_ctx.get("track_id"))
         state = self.job_totals.setdefault(
             job_id, {"tracks": {}, "started_at": time.monotonic(), "finished": False}
         )
