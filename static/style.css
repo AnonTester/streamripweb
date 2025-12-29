@@ -200,6 +200,15 @@ input:focus, select:focus, textarea:focus, button:focus {
   .search-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  #results-table .col-title {
+    min-width: 220px;
+  }
+
+  .selection-group .btn {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
 }
 
 .results-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -240,7 +249,11 @@ th, td {
   width: clamp(160px, 22%, 280px);
 }
 
-#results-table .col-year.is-hidden-col {
+#results-table .col-title {
+  width: clamp(240px, 32%, 480px);
+}
+
+#results-table .is-hidden-col {
   display: none;
 }
 

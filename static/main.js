@@ -45,6 +45,7 @@ const state = {
   lastQuery: '',
   hasSearched: false,
   currentSource: '',
+  currentMediaType: '',
   activeTab: 'search',
   queueContext: 'search',
   activeQueueJobIds: new Set(),
@@ -710,10 +711,40 @@ function updateResultsWithHistory() {
   return changed;
 }
 
-function updateYearColumnVisibility() {
-  const hideYear = state.currentSource === 'deezer';
-  document.querySelectorAll('.col-year').forEach((cell) => {
-    cell.classList.toggle('is-hidden-col', hideYear);
+function updateColumnVisibility() {
+  const hideAll = {
+    artist: false,
+    tracks: false,
+    year: false,
+  };
+  if (state.currentSource === 'deezer') {
+    switch (state.currentMediaType) {
+      case 'track':
+        hideAll.tracks = true;
+        break;
+      case 'artist':
+        hideAll.artist = true;
+        hideAll.tracks = true;
+        break;
+      case 'album':
+        hideAll.year = true;
+        break;
+      case 'playlist':
+        hideAll.artist = true;
+        break;
+      default:
+        break;
+    }
+  }
+  const map = [
+    { selector: '.col-artist', hide: hideAll.artist },
+    { selector: '.col-tracks', hide: hideAll.tracks },
+    { selector: '.col-year', hide: hideAll.year },
+  ];
+  map.forEach(({ selector, hide }) => {
+    document.querySelectorAll(selector).forEach((cell) => {
+      cell.classList.toggle('is-hidden-col', hide);
+    });
   });
 }
 
@@ -754,16 +785,16 @@ function renderResults(results) {
     tr.innerHTML = `
       <td><input type="checkbox" data-index="${idx}" data-downloaded="${isDownloaded}" title="${isDownloaded ? 'Select again if desired' : 'Select for download'}"></td>
       <td class="col-artist">${artist}</td>
-      <td>${row.title || row.summary} ${downloadedPill}</td>
+      <td class="col-title">${row.title || row.summary} ${downloadedPill}</td>
       <td class="col-year">${row.year || ''}</td>
-      <td>${row.album_type || row.media_type || ''}</td>
-      <td>${row.tracks || ''}</td>
-      <td>${row.explicit ? '⚠️' : ''}</td>
-      <td>${row.source || ''}</td>
+      <td class="col-type">${row.album_type || row.media_type || ''}</td>
+      <td class="col-tracks">${row.tracks || ''}</td>
+      <td class="col-explicit">${row.explicit ? '⚠️' : ''}</td>
+      <td class="col-source">${row.source || ''}</td>
     `;
     tbody.appendChild(tr);
   });
-  updateYearColumnVisibility();
+  updateColumnVisibility();
   updateDownloadVisibility();
 }
 
@@ -812,6 +843,7 @@ tbody.addEventListener('change', (ev) => {
 const searchForm = document.getElementById('search-form');
 const queryInput = document.getElementById('search-query');
 const sourceSelect = searchForm.querySelector('select[name="source"]');
+const mediaTypeSelect = searchForm.querySelector('select[name="media_type"]');
 const searchLoadingBanner = document.getElementById('search-loading');
 const searchLoadingText = document.getElementById('search-loading-text');
 const searchSubmitBtn = searchForm.querySelector('button[type="submit"]');
@@ -824,9 +856,12 @@ function applyDefaultSource() {
   if (state.appSettings.defaultSource && sourceSelect) {
     sourceSelect.value = state.appSettings.defaultSource;
   }
+  if (mediaTypeSelect) {
+    state.currentMediaType = mediaTypeSelect.value;
+  }
   if (sourceSelect) {
     state.currentSource = sourceSelect.value;
-    updateYearColumnVisibility();
+    updateColumnVisibility();
   }
 }
 
@@ -835,7 +870,14 @@ applyDefaultSource();
 if (sourceSelect) {
   sourceSelect.addEventListener('change', () => {
     state.currentSource = sourceSelect.value;
-    updateYearColumnVisibility();
+    updateColumnVisibility();
+  });
+}
+
+if (mediaTypeSelect) {
+  mediaTypeSelect.addEventListener('change', () => {
+    state.currentMediaType = mediaTypeSelect.value;
+    updateColumnVisibility();
   });
 }
 
@@ -859,7 +901,8 @@ searchForm.addEventListener('submit', async (ev) => {
   const payload = Object.fromEntries(formData.entries());
   payload.limit = Number(payload.limit || 25);
   state.currentSource = payload.source || sourceSelect?.value || state.currentSource;
-  updateYearColumnVisibility();
+  state.currentMediaType = payload.media_type || mediaTypeSelect?.value || state.currentMediaType;
+  updateColumnVisibility();
   state.lastQuery = payload.query;
   state.hasSearched = true;
   setSearchLoading(true);
