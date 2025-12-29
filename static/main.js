@@ -53,6 +53,12 @@ const state = {
   unsavedSettings: false,
 };
 
+function debugLog(...args) {
+  if (state.appSettings?.debugLogging) {
+    console.debug('[StreamRIP Web]', ...args);
+  }
+}
+
 let queuePollTimer = null;
 let queueRequestController = null;
 
@@ -890,19 +896,34 @@ function buildQueueRow(item) {
       ? Math.min(100, Math.round((received / total) * 100))
       : 0;
   const eta = overall.eta != null ? `${Math.max(0, Math.round(overall.eta))}s` : '—';
-  const statusLabel = item.status === 'completed'
+  const summary = progress?.summary || {};
+  const counts = summary.counts || {};
+  const totalTracks = summary.total_tracks ?? Object.keys(progress?.tracks || {}).length;
+  const downloadedTracks = summary.downloaded ?? counts.downloaded ?? 0;
+  const skippedTracks = summary.skipped ?? counts.skipped ?? 0;
+  const failedTracks = summary.failed ?? counts.failed ?? 0;
+  const hasIssues = !item.downloaded && (failedTracks > 0 || skippedTracks > 0);
+  const statusLabel = item.downloaded
     ? 'Completed'
     : item.status === 'failed'
       ? 'Failed'
-      : pct
-        ? `${pct}%`
-        : item.status.replace('_', ' ');
+      : item.status === 'partial' || hasIssues
+        ? 'Needs attention'
+        : pct
+          ? `${pct}%`
+          : item.status.replace('_', ' ');
   const trackProgress = progress?.progress || {};
   const trackTotal = trackProgress.total || 0;
   const trackReceived = trackProgress.received || 0;
   const trackPct = trackTotal ? Math.min(100, Math.round((trackReceived / trackTotal) * 100)) : 0;
   const trackEta = trackProgress.eta != null ? `${Math.max(0, Math.round(trackProgress.eta))}s` : '—';
   const trackLabel = progress?.track?.title || trackProgress.desc || '—';
+  const trackStatus = trackProgress.status || (hasIssues ? 'Needs attention' : '—');
+  const trackMessage = trackProgress.message || '';
+  const trackSummary = totalTracks
+    ? `${downloadedTracks}/${totalTracks} downloaded${skippedTracks ? `, ${skippedTracks} skipped` : ''}${failedTracks ? `, ${failedTracks} failed` : ''}`
+    : 'Waiting for track info';
+  const disableActions = item.status === 'in_progress';
   const div = document.createElement('div');
   div.className = 'queue-item';
   div.innerHTML = `
@@ -912,15 +933,17 @@ function buildQueueRow(item) {
       </div>
       <div class="status ${item.status}">${statusLabel}</div>
     </div>
-    <div class="muted">Attempts: ${item.attempts || 0}${item.error ? ` · ${item.error}` : ''}</div>
+    <div class="muted">Attempts: ${item.attempts || 0}${item.error ? ` · ${item.error}` : ''}${item.force_no_db ? ' · Forcing download (no DB)' : ''}</div>
+    <div class="muted">Tracks: ${trackSummary}</div>
     <div class="progress-bar"><span style="width:${pct}%;"></span></div>
     <div class="muted">Overall ETA: ${eta}</div>
-    <div class="muted">Track: ${trackLabel} · ${trackPct ? `${trackPct}%` : '—'} · ETA ${trackEta}</div>
+    <div class="muted">Track: ${trackLabel} · ${trackPct ? `${trackPct}%` : '—'} · ETA ${trackEta} · Status: ${trackStatus}${trackMessage ? ` (${trackMessage})` : ''}</div>
     <div class="progress-bar"><span style="width:${trackPct}%;"></span></div>
     <div class="stack action-row">
-      <button class="btn ghost" data-action="retry" data-id="${item.job_id}">Retry</button>
+      <button class="btn ghost" data-action="retry" data-id="${item.job_id}" ${disableActions ? 'disabled' : ''}>Retry</button>
+      <button class="btn ghost" data-action="force" data-id="${item.job_id}" ${disableActions ? 'disabled' : ''}>Force re-download</button>
       <button class="btn ghost" data-action="save" data-id="${item.job_id}">Save for later</button>
-      <button class="btn danger" data-action="abort" data-id="${item.job_id}">Abort</button>
+      <button class="btn danger" data-action="abort" data-id="${item.job_id}" ${disableActions ? 'disabled' : ''}>Abort</button>
     </div>
   `;
   return div;
@@ -932,6 +955,7 @@ function renderQueue(queue, progressMap, history) {
   if (progressMap) {
     state.progress = progressMap;
   }
+  debugLog('Rendering queue', { queue: incomingQueue, progress: state.progress });
   if (history) {
     state.history = history;
   }
@@ -947,11 +971,13 @@ function renderQueue(queue, progressMap, history) {
   let resultsUpdated = false;
   state.queue.forEach((item) => {
     const progress = state.progress[item.job_id];
-    const status = progress && item.status !== 'completed' && item.status !== 'failed'
+    const isTerminal = ['completed', 'failed', 'partial', 'aborted'].includes(item.status);
+    const status = progress && !isTerminal
       ? 'in_progress'
       : item.status;
-    const normalizedItem = { ...item, status };
-    if (status === 'completed') {
+    const downloaded = item.downloaded || Boolean(progress?.summary?.all_downloaded);
+    const normalizedItem = { ...item, status, downloaded };
+    if (downloaded) {
       resultsUpdated = markResultDownloadedByQueueItem(normalizedItem) || resultsUpdated;
     }
     queueLists.forEach((list) => {
@@ -1570,6 +1596,7 @@ async function refreshQueue() {
   try {
     const res = await fetch('/api/queue', { signal: queueRequestController.signal });
     const data = await res.json();
+    debugLog('Queue poll response', data);
     renderQueue(data.queue || [], data.progress, data.history);
   } catch (err) {
     if (err.name === 'AbortError') return;
@@ -1665,9 +1692,13 @@ window.addEventListener('beforeunload', (event) => {
 function handleQueueCompletion(prevQueue) {
   const queueMap = new Map(state.queue.map((item) => [item.job_id, item]));
   const activeJobs = Array.from(state.activeQueueJobIds || []);
-  const activeStatuses = activeJobs.map((id) => queueMap.get(id)?.status || 'completed');
-  const activeHasFailure = activeStatuses.some((status) => ['failed', 'aborted', 'retrying'].includes(status));
-  const activeAllDone = activeJobs.length > 0 && activeStatuses.every((status) => status === 'completed');
+  const activeItems = activeJobs
+    .map((id) => queueMap.get(id))
+    .filter(Boolean);
+  const activeHasFailure = activeItems.some(
+    (item) => ['failed', 'aborted', 'retrying'].includes(item.status) || !item.downloaded,
+  );
+  const activeAllDone = activeItems.length > 0 && activeItems.every((item) => item.downloaded);
 
   if (state.queueContext === 'url') {
     if (state.queue.length && activeJobs.length) {
@@ -1747,6 +1778,7 @@ function connectSSE() {
   source.addEventListener('queue', (event) => {
     const payload = JSON.parse(event.data);
     const data = payload.data || payload.queue || payload;
+    debugLog('SSE queue event', data);
     renderQueue(data.queue || data, data.progress, data.history);
     const queueItems = data.queue || data;
     const ids = new Set((queueItems || []).map((item) => item.job_id));
@@ -1758,7 +1790,8 @@ function connectSSE() {
   source.addEventListener('progress', (event) => {
     const payload = JSON.parse(event.data);
     const data = payload.data || payload;
-    state.progress[data.job_id] = { overall: data.overall, track: data.track, progress: data.progress };
+    debugLog('SSE progress event', data);
+    state.progress[data.job_id] = data;
     state.queue = state.queue.map((item) => (item.job_id === data.job_id ? { ...item, status: item.status === 'completed' ? item.status : 'in_progress' } : item));
     renderQueue(state.queue, state.progress, state.history);
   });

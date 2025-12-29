@@ -4,12 +4,14 @@ import logging
 import os
 import time
 import uuid
+from collections import Counter
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List
 
 from streamrip import progress
-from streamrip.media.track import Track
+from streamrip.media import PendingSingle, PendingTrack
+from streamrip.media.track import Track, global_download_semaphore
 from streamrip.rip.main import Main
 
 from .config_manager import StreamripConfigManager
@@ -43,6 +45,7 @@ class QueueItem:
     attempts: int = 0
     error: str | None = None
     downloaded: bool = False
+    force_no_db: bool = False
 
     def display_label(self) -> str:
         label = self.title
@@ -71,6 +74,12 @@ class EventBroker:
     async def publish(self, event: Dict[str, Any]):
         async with self.lock:
             subscribers = list(self.subscribers)
+        logger.debug(
+            "Publishing event to %s subscribers | type=%s keys=%s",
+            len(subscribers),
+            event.get("event"),
+            list(event.keys()),
+        )
         for queue in subscribers:
             try:
                 queue.put_nowait(event)
@@ -86,6 +95,9 @@ class ProgressTap:
         self.broker = broker
         self.original_get_progress = progress.get_progress_callback
         self.original_track_download = Track.download
+        self.original_track_postprocess = Track.postprocess
+        self.original_pending_track_resolve = PendingTrack.resolve
+        self.original_pending_single_resolve = PendingSingle.resolve
         self.current_job: ContextVar[str | None] = ContextVar(
             "current_job", default=None
         )
@@ -98,8 +110,177 @@ class ProgressTap:
 
     def _patch(self):
         progress.get_progress_callback = self._patched_get_progress
-        original_download = self.original_track_download
         tap = self
+
+        async def patched_pending_resolve(self_ref: PendingTrack, *args, **kwargs):
+            job_id = tap.current_job.get()
+            track_id = getattr(self_ref, "id", None)
+            track_ctx = {
+                "track_id": track_id,
+                "album": getattr(self_ref.album, "album", None),
+                "source": getattr(getattr(self_ref, "client", None), "source", None),
+            }
+            tap._mark_track_status(
+                job_id,
+                track_id,
+                status="resolving",
+                track_ctx=track_ctx,
+                desc=f"Track {track_id}",
+                received=0,
+                total=1,
+                message=None,
+            )
+            already_downloaded = False
+            try:
+                already_downloaded = bool(self_ref.db.downloaded(self_ref.id))
+                if already_downloaded:
+                    tap._mark_track_status(
+                        job_id,
+                        track_id,
+                        status="skipped",
+                        track_ctx=track_ctx,
+                        desc=f"Track {track_id}",
+                        received=1,
+                        total=1,
+                        message="Already downloaded in database",
+                    )
+                    return None
+                track = await tap.original_pending_track_resolve(self_ref, *args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                tap._mark_track_status(
+                    job_id,
+                    track_id,
+                    status="failed",
+                    track_ctx=track_ctx,
+                    desc=f"Track {track_id}",
+                    received=1,
+                    total=1,
+                    message=str(exc),
+                )
+                raise
+
+            if track is None:
+                status = "skipped" if already_downloaded else "failed"
+                tap._mark_track_status(
+                    job_id,
+                    track_id,
+                    status=status,
+                    track_ctx=track_ctx,
+                    desc=f"Track {track_id}",
+                    received=1,
+                    total=1,
+                    message=(
+                        "Already downloaded in database"
+                        if status == "skipped"
+                        else "Track unavailable or failed to resolve"
+                    ),
+                )
+                return None
+
+            track_ctx = {
+                "track_id": getattr(track.meta.info, "id", track_id),
+                "title": track.meta.title,
+                "album": getattr(track.meta.album, "album", None),
+                "tracknumber": track.meta.tracknumber,
+                "discnumber": track.meta.discnumber,
+            }
+            tap._mark_track_status(
+                job_id,
+                track_ctx["track_id"],
+                status="ready",
+                track_ctx=track_ctx,
+                desc=track.meta.title,
+                received=0,
+                total=1,
+                message=None,
+            )
+            return track
+
+        async def patched_single_resolve(self_ref: PendingSingle, *args, **kwargs):
+            job_id = tap.current_job.get()
+            track_id = getattr(self_ref, "id", None)
+            track_ctx = {
+                "track_id": track_id,
+                "album": None,
+                "source": getattr(getattr(self_ref, "client", None), "source", None),
+            }
+            tap._mark_track_status(
+                job_id,
+                track_id,
+                status="resolving",
+                track_ctx=track_ctx,
+                desc=f"Track {track_id}",
+                received=0,
+                total=1,
+                message=None,
+            )
+            already_downloaded = False
+            try:
+                already_downloaded = bool(self_ref.db.downloaded(self_ref.id))
+                if already_downloaded:
+                    tap._mark_track_status(
+                        job_id,
+                        track_id,
+                        status="skipped",
+                        track_ctx=track_ctx,
+                        desc=f"Track {track_id}",
+                        received=1,
+                        total=1,
+                        message="Already downloaded in database",
+                    )
+                    return None
+                track = await tap.original_pending_single_resolve(self_ref, *args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                tap._mark_track_status(
+                    job_id,
+                    track_id,
+                    status="failed",
+                    track_ctx=track_ctx,
+                    desc=f"Track {track_id}",
+                    received=1,
+                    total=1,
+                    message=str(exc),
+                )
+                raise
+
+            if track is None:
+                status = "skipped" if already_downloaded else "failed"
+                tap._mark_track_status(
+                    job_id,
+                    track_id,
+                    status=status,
+                    track_ctx=track_ctx,
+                    desc=f"Track {track_id}",
+                    received=1,
+                    total=1,
+                    message=(
+                        "Already downloaded in database"
+                        if status == "skipped"
+                        else "Track unavailable or failed to resolve"
+                    ),
+                )
+                return None
+
+            track_ctx = {
+                "track_id": getattr(track.meta.info, "id", track_id),
+                "title": track.meta.title,
+                "album": getattr(track.meta.album, "album", None),
+                "tracknumber": track.meta.tracknumber,
+                "discnumber": track.meta.discnumber,
+            }
+            tap._mark_track_status(
+                job_id,
+                track_ctx["track_id"],
+                status="ready",
+                track_ctx=track_ctx,
+                desc=track.meta.title,
+                received=0,
+                total=1,
+                message=None,
+            )
+            return track
+
+        original_download = self.original_track_download
 
         async def patched_download(self_ref: Track, *args, **kwargs):
             job_id = tap.current_job.get()
@@ -117,7 +298,37 @@ class ProgressTap:
             }
             token = tap.current_track.set(track_info)
             try:
-                return await original_download(self_ref, *args, **kwargs)
+                track_id = track_info.get("track_id")
+                tap._mark_track_status(
+                    job_id,
+                    track_id,
+                    status="downloading",
+                    track_ctx=track_info,
+                    desc=self_ref.meta.title,
+                    message=None,
+                )
+                success, error_message = await tap._download_with_tracking(
+                    self_ref, *args, **kwargs
+                )
+                if success:
+                    tap._mark_track_status(
+                        job_id,
+                        track_id,
+                        status="downloaded",
+                        track_ctx=track_info,
+                        desc=self_ref.meta.title,
+                        message=None,
+                    )
+                else:
+                    tap._mark_track_status(
+                        job_id,
+                        track_id,
+                        status="failed",
+                        track_ctx=track_info,
+                        desc=self_ref.meta.title,
+                        message=error_message or "Download failed",
+                    )
+                return success
             finally:
                 tap.current_track.reset(token)
                 logger.debug(
@@ -127,26 +338,87 @@ class ProgressTap:
                 )
 
         Track.download = patched_download  # type: ignore
+        PendingTrack.resolve = patched_pending_resolve  # type: ignore
+        PendingSingle.resolve = patched_single_resolve  # type: ignore
+
+        original_postprocess = self.original_track_postprocess
+
+        async def patched_postprocess(self_ref: Track, *args, **kwargs):
+            job_id = tap.current_job.get()
+            track_id = getattr(self_ref.meta.info, "id", None)
+            if getattr(self_ref, "_download_failed", False):
+                tap._mark_track_status(
+                    job_id,
+                    track_id,
+                    status="failed",
+                    track_ctx={
+                        "track_id": track_id,
+                        "title": self_ref.meta.title,
+                        "album": getattr(self_ref.meta.album, "album", None),
+                        "tracknumber": self_ref.meta.tracknumber,
+                        "discnumber": self_ref.meta.discnumber,
+                    },
+                    desc=self_ref.meta.title,
+                    message="Download failed before post-processing",
+                )
+                logger.debug(
+                    "Skipping postprocess for failed track | job_id=%s track=%s",
+                    job_id,
+                    track_id,
+                )
+                return None
+            result = await original_postprocess(self_ref, *args, **kwargs)
+            tap._mark_track_status(
+                job_id,
+                track_id,
+                status="downloaded",
+                track_ctx={
+                    "track_id": track_id,
+                    "title": self_ref.meta.title,
+                    "album": getattr(self_ref.meta.album, "album", None),
+                    "tracknumber": self_ref.meta.tracknumber,
+                    "discnumber": self_ref.meta.discnumber,
+                },
+                desc=self_ref.meta.title,
+                message=None,
+            )
+            return result
+
+        Track.postprocess = patched_postprocess  # type: ignore
 
     def start_job(self, job_id: str):
         self.job_totals[job_id] = {
             "tracks": {},
             "started_at": time.monotonic(),
+            "finished": False,
         }
+        self.latest_progress.pop(job_id, None)
         logger.info("Progress tracking started for job %s", job_id)
 
     def finish_job(self, job_id: str):
+        summary = self.summarize_job(job_id)
+        if job_id in self.job_totals:
+            self.job_totals[job_id]["finished"] = True
+        if job_id in self.latest_progress:
+            self.latest_progress[job_id]["summary"] = summary
+        else:
+            self.latest_progress[job_id] = {
+                "job_id": job_id,
+                "summary": summary,
+                "tracks": {},
+            }
         self.job_totals.pop(job_id, None)
-        self.latest_progress.pop(job_id, None)
-        logger.info("Progress tracking finished for job %s", job_id)
+        logger.info(
+            "Progress tracking finished for job %s | summary=%s", job_id, summary
+        )
 
     def _patched_get_progress(self, enabled: bool, total: int, desc: str):
         handle = self.original_get_progress(enabled, total, desc)
-        job_id = self.current_job.get()
+        job_id = self.current_job.get() or "unknown"
         started = time.monotonic()
         state = self.job_totals.setdefault(
-            job_id or "unknown",
-            {"tracks": {}, "started_at": started},
+            job_id,
+            {"tracks": {}, "started_at": started, "finished": False},
         )
         initial_track_ctx = self.current_track.get()
         track_id = initial_track_ctx.get("track_id") if initial_track_ctx else desc
@@ -159,9 +431,10 @@ class ProgressTap:
                 track_id,
                 {
                     "received": 0,
-                    "total": total,
+                    "total": max(total, 1),
                     "title": desc,
                     "started_at": time.monotonic(),
+                    "status": "downloading",
                 },
             )
             track_state["started_at"] = track_state.get("started_at") or time.monotonic()
@@ -169,51 +442,21 @@ class ProgressTap:
             track_state["received"] = min(
                 track_state["received"] + increment, total
             )
-            received_sum = sum(t["received"] for t in state["tracks"].values())
-            total_sum = sum(t["total"] for t in state["tracks"].values()) or total
-            elapsed = max(time.monotonic() - state["started_at"], 0.0001)
-            overall_rate = received_sum / elapsed
-            track_elapsed = max(
-                time.monotonic() - track_state.get("started_at", state["started_at"]),
-                0.0001,
-            )
-            track_rate = track_state["received"] / track_elapsed
-            eta_total = (
-                (total_sum - received_sum) / overall_rate
-                if overall_rate > 0
-                else None
-            )
-            per_track_eta = (
-                (total - track_state["received"]) / track_rate
-                if track_rate > 0
-                else None
-            )
-            event_data = {
-                "job_id": job_id,
-                "progress": {
-                    "track_id": track_id,
-                    "desc": desc,
-                    "received": track_state["received"],
-                    "total": total,
-                    "eta": per_track_eta,
-                },
-                "overall": {
-                    "received": received_sum,
-                    "total": total_sum,
-                    "eta": eta_total,
-                },
-            }
             if track_ctx:
-                event_data |= {"track": track_ctx}
-            self.latest_progress[job_id or "unknown"] = event_data
+                track_state["track_ctx"] = track_ctx
+                track_state["title"] = track_ctx.get("title") or desc
+            track_state["status"] = track_state.get("status") or "downloading"
+            event_data = self._build_progress_event(
+                job_id, track_id, track_state, track_ctx, desc, total_override=total
+            )
+            self.latest_progress[job_id] = event_data
             logger.debug(
-                "Progress update | job_id=%s track_id=%s received=%s total=%s eta=%s overall_eta=%s",
+                "Progress update | job_id=%s track_id=%s received=%s total=%s status=%s",
                 job_id,
                 track_id,
                 track_state["received"],
                 total,
-                per_track_eta,
-                eta_total,
+                track_state.get("status"),
             )
             asyncio.create_task(
                 self.broker.publish(
@@ -226,13 +469,209 @@ class ProgressTap:
             handle.update(x)
 
         def done():
-            _update_totals(total)
+            _update_totals(total - state["tracks"].get(track_id, {}).get("received", 0))
             handle.done()
 
         return progress.Handle(update, done)
 
     def snapshot(self) -> dict[str, dict[str, Any]]:
         return dict(self.latest_progress)
+
+    def _effective_total(self, track_state: dict[str, Any]) -> int:
+        total = track_state.get("total") or 0
+        return total if total > 0 else 1
+
+    def summarize_job(self, job_id: str) -> dict[str, Any]:
+        state = self.job_totals.get(job_id) or {}
+        tracks = state.get("tracks", {})
+        counts = Counter(t.get("status", "unknown") for t in tracks.values())
+        total_tracks = len(tracks)
+        summary = {
+            "counts": dict(counts),
+            "total_tracks": total_tracks,
+            "downloaded": counts.get("downloaded", 0),
+            "failed": counts.get("failed", 0),
+            "skipped": counts.get("skipped", 0),
+        }
+        summary["all_downloaded"] = (
+            total_tracks > 0 and summary["downloaded"] == total_tracks
+        )
+        return summary
+
+    def _build_progress_event(
+        self,
+        job_id: str,
+        track_id: str | int,
+        track_state: dict[str, Any],
+        track_ctx: dict | None,
+        desc: str,
+        *,
+        total_override: int | None = None,
+    ) -> dict[str, Any]:
+        state = self.job_totals.setdefault(
+            job_id,
+            {"tracks": {}, "started_at": time.monotonic(), "finished": False},
+        )
+        state["tracks"][track_id] = track_state
+        received_sum = sum(t.get("received", 0) for t in state["tracks"].values())
+        total_sum = sum(self._effective_total(t) for t in state["tracks"].values()) or (
+            total_override or track_state.get("total") or 1
+        )
+        elapsed = max(time.monotonic() - state.get("started_at", time.monotonic()), 0.0001)
+        overall_rate = received_sum / elapsed
+        track_elapsed = max(
+            time.monotonic() - track_state.get("started_at", state.get("started_at", time.monotonic())),
+            0.0001,
+        )
+        track_rate = track_state.get("received", 0) / track_elapsed
+        eta_total = (
+            (total_sum - received_sum) / overall_rate if overall_rate > 0 else None
+        )
+        per_track_eta = (
+            (track_state.get("total", 0) - track_state.get("received", 0)) / track_rate
+            if track_rate > 0
+            else None
+        )
+        summary = self.summarize_job(job_id)
+        event_data = {
+            "job_id": job_id,
+            "progress": {
+                "track_id": track_id,
+                "desc": desc,
+                "received": track_state.get("received", 0),
+                "total": track_state.get("total", 0),
+                "eta": per_track_eta,
+                "status": track_state.get("status"),
+                "message": track_state.get("message"),
+            },
+            "overall": {
+                "received": received_sum,
+                "total": total_sum,
+                "eta": eta_total,
+            },
+            "summary": summary,
+            "tracks": {
+                str(tid): {
+                    "received": ts.get("received", 0),
+                    "total": ts.get("total", 0),
+                    "status": ts.get("status"),
+                    "message": ts.get("message"),
+                    "title": ts.get("title"),
+                }
+                for tid, ts in state["tracks"].items()
+            },
+        }
+        if track_ctx:
+            event_data |= {"track": track_ctx}
+        return event_data
+
+    def _mark_track_status(
+        self,
+        job_id: str | None,
+        track_id: str | int | None,
+        *,
+        status: str,
+        track_ctx: dict | None,
+        desc: str,
+        message: str | None = None,
+        received: int | None = None,
+        total: int | None = None,
+    ):
+        if job_id is None or track_id is None:
+            return
+        state = self.job_totals.setdefault(
+            job_id, {"tracks": {}, "started_at": time.monotonic(), "finished": False}
+        )
+        track_state = state["tracks"].setdefault(
+            track_id,
+            {
+                "received": 0,
+                "total": max(total or 1, 1),
+                "title": desc,
+                "started_at": time.monotonic(),
+            },
+        )
+        if received is not None:
+            track_state["received"] = received
+        if total is not None:
+            track_state["total"] = max(total, 1)
+        track_state["status"] = status
+        track_state["message"] = message
+        track_state["title"] = track_ctx.get("title") if track_ctx else desc
+        if track_ctx:
+            track_state["track_ctx"] = track_ctx
+        event_data = self._build_progress_event(
+            job_id, track_id, track_state, track_ctx, desc
+        )
+        self.latest_progress[job_id] = event_data
+        logger.debug(
+            "Track status update | job_id=%s track_id=%s status=%s message=%s",
+            job_id,
+            track_id,
+            status,
+            message,
+        )
+        asyncio.create_task(
+            self.broker.publish({"event": "progress", "data": event_data})
+        )
+
+    async def _download_with_tracking(
+        self, track: Track, *args, **kwargs
+    ) -> tuple[bool, str | None]:
+        error_message: str | None = None
+        success = False
+        track._download_failed = False  # type: ignore[attr-defined]
+        downloads_config = track.config.session.downloads
+        async with global_download_semaphore(downloads_config):
+            desc = f"Track {track.meta.tracknumber}"
+            try:
+                size = await track.downloadable.size()
+            except Exception as exc:  # noqa: BLE001
+                track._download_failed = True  # type: ignore[attr-defined]
+                return False, str(exc)
+            with progress.get_progress_callback(
+                track.config.session.cli.progress_bars,
+                size,
+                desc,
+            ) as callback:
+                try:
+                    await track.downloadable.download(track.download_path, callback)
+                    success = True
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "Error downloading track '%s', retrying: %s",
+                        track.meta.title,
+                        exc,
+                    )
+                    error_message = str(exc)
+                    success = False
+            if success:
+                return True, None
+
+            desc_retry = f"{desc} (retry)"
+            with progress.get_progress_callback(
+                track.config.session.cli.progress_bars,
+                size,
+                desc_retry,
+            ) as callback:
+                try:
+                    await track.downloadable.download(track.download_path, callback)
+                    success = True
+                except Exception as exc:  # noqa: BLE001
+                    error_message = str(exc)
+                    logger.error(
+                        "Persistent error downloading track '%s', skipping: %s",
+                        track.meta.title,
+                        exc,
+                    )
+                    track.db.set_failed(
+                        track.downloadable.source, "track", track.meta.info.id
+                    )
+                    track._download_failed = True  # type: ignore[attr-defined]
+
+        if not success and error_message is None:
+            error_message = "Download failed"
+        return success, error_message
 
 
 class SavedStore:
@@ -325,11 +764,14 @@ class DownloadManager:
         }
         self.queue: Dict[str, QueueItem] = {}
         self.order: List[str] = []
+        self.display_order: List[str] = []
         self.worker: asyncio.Task | None = None
         self.lock = asyncio.Lock()
 
     def snapshot(self) -> list[dict]:
-        return [self._item_to_dict(self.queue[jid]) for jid in self.order]
+        valid_ids = [jid for jid in self.display_order if jid in self.queue]
+        self.display_order = valid_ids
+        return [self._item_to_dict(self.queue[jid]) for jid in valid_ids]
 
     def saved_items(self) -> list[dict]:
         return self.saved_store.list()
@@ -384,11 +826,32 @@ class DownloadManager:
             "attempts": item.attempts,
             "error": item.error,
             "downloaded": item.downloaded,
+            "force_no_db": item.force_no_db,
         }
 
     async def enqueue(self, entries: list[dict]):
         async with self.lock:
             for entry in entries:
+                existing = next(
+                    (
+                        jid
+                        for jid, queued in self.queue.items()
+                        if queued.source == entry["source"]
+                        and str(queued.item_id) == str(entry["id"])
+                    ),
+                    None,
+                )
+                if existing:
+                    if existing not in self.display_order:
+                        self.display_order.append(existing)
+                    logger.info(
+                        "Skipping duplicate enqueue | source=%s media_type=%s item_id=%s existing_job=%s",
+                        entry.get("source"),
+                        entry.get("media_type"),
+                        entry.get("id"),
+                        existing,
+                    )
+                    continue
                 job_id = str(uuid.uuid4())
                 item = QueueItem(
                     job_id=job_id,
@@ -398,9 +861,12 @@ class DownloadManager:
                     title=entry.get("title") or entry.get("name") or entry["id"],
                     artist=_stringify_artist(entry.get("artist")),
                     downloaded=entry.get("downloaded", False),
+                    force_no_db=bool(entry.get("force_no_db") or entry.get("no_db")),
                 )
                 self.queue[job_id] = item
                 self.order.append(job_id)
+                if job_id not in self.display_order:
+                    self.display_order.append(job_id)
                 logger.info(
                     "Enqueued item | job_id=%s source=%s media_type=%s item_id=%s title=%s",
                     job_id,
@@ -456,10 +922,25 @@ class DownloadManager:
             token = self.progress_tap.current_job.set(item.job_id)
             try:
                 await self._run_streamrip(item)
-                item.status = "completed"
-                item.downloaded = True
-                self._record_download(item)
-                logger.info("Job completed | job_id=%s attempts=%s", item.job_id, item.attempts)
+                summary = self.progress_tap.summarize_job(item.job_id)
+                if summary.get("all_downloaded"):
+                    item.status = "completed"
+                    item.downloaded = True
+                    item.force_no_db = False
+                    self._record_download(item)
+                else:
+                    item.status = "partial"
+                    item.downloaded = False
+                    item.error = (
+                        f"Tracks failed: {summary.get('failed', 0)}; "
+                        f"skipped: {summary.get('skipped', 0)}"
+                    )
+                logger.info(
+                    "Job completed | job_id=%s attempts=%s summary=%s",
+                    item.job_id,
+                    item.attempts,
+                    summary,
+                )
                 self.saved_store.remove(
                     lambda saved: saved.get("id") == item.item_id
                     and saved.get("source") == item.source
@@ -509,6 +990,12 @@ class DownloadManager:
         config.file.cli.progress_bars = True
         config.session.cli.text_output = False
         config.file.cli.text_output = False
+        if item.force_no_db:
+            config.session.database.downloads_enabled = False
+            logger.info(
+                "Bypassing downloads database for job %s (force_no_db enabled)",
+                item.job_id,
+            )
         logger.debug(
             "Launching streamrip Main for job %s | source=%s media_type=%s item_id=%s",
             item.job_id,
@@ -569,13 +1056,21 @@ class DownloadManager:
             {"event": "saved", "data": self.saved_store.list()}
         )
 
-    async def retry(self, job_id: str):
+    async def retry(self, job_id: str, *, force_no_db: bool = False):
         if job_id not in self.queue:
             return
         item = self.queue[job_id]
         item.status = "queued"
         item.error = None
-        logger.info("Retrying job %s", job_id)
+        item.downloaded = False
+        if force_no_db:
+            item.force_no_db = True
+        logger.info(
+            "Retrying job %s | force_no_db=%s attempts=%s",
+            job_id,
+            force_no_db,
+            item.attempts,
+        )
         async with self.lock:
             self.order.append(job_id)
             if self.worker is None or self.worker.done():
@@ -593,6 +1088,10 @@ class DownloadManager:
         await self.event_broker.publish(
             {"event": "queue", "data": self._queue_payload()}
         )
+
+    async def force_redownload(self, job_id: str):
+        logger.info("Force re-download requested | job_id=%s", job_id)
+        await self.retry(job_id, force_no_db=True)
 
     async def download_saved(self, entries: list[dict] | None = None):
         entries = entries or self.saved_store.list()

@@ -33,7 +33,7 @@ def sse_response(generator, *, formatted: bool = False):
     return StreamingResponse(generator, media_type="text/event-stream")
 
 
-APP_VERSION = "0.5.3"
+APP_VERSION = "0.6.0"
 APP_REPO = os.getenv("STREAMRIP_WEB_REPO", "AnonTester/streamripweb")
 STREAMRIP_REPO = os.getenv("STREAMRIP_REPO", "nathom/streamrip")
 data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
@@ -148,6 +148,13 @@ async def queue_state():
 async def retry_job(job_id: str):
     logger.info("Retry requested for job %s", job_id)
     await download_manager.retry(job_id)
+    return download_manager.queue_state()
+
+
+@app.post("/api/queue/{job_id}/force")
+async def force_job(job_id: str):
+    logger.info("Force re-download requested for job %s", job_id)
+    await download_manager.force_redownload(job_id)
     return download_manager.queue_state()
 
 
