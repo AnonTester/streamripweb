@@ -8,6 +8,7 @@ from collections import Counter
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List
+from urllib.parse import urlparse
 
 from streamrip import progress
 from streamrip.media import PendingSingle, PendingTrack
@@ -30,6 +31,12 @@ def _stringify_artist(value: Any) -> str | None:
         parts = [_stringify_artist(v) for v in value]
         return ", ".join([p for p in parts if p])
     return str(value)
+
+
+def _is_lastfm_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return host == "www.last.fm" or host == "last.fm"
 
 
 @dataclass
@@ -1027,6 +1034,10 @@ class DownloadManager:
             item.item_id,
         )
         async with Main(config) as main:
+            if item.source == "lastfm" or item.media_type == "lastfm":
+                await main.resolve_lastfm(item.url or item.item_id)
+                await main.rip()
+                return
             if item.media_type == "url" or item.source == "url":
                 await main.add_all([item.url or item.item_id])
             else:
@@ -1038,16 +1049,25 @@ class DownloadManager:
             await main.rip()
 
     async def enqueue_urls(self, urls: list[str]):
-        entries = [
-            {
-                "source": "url",
-                "media_type": "url",
-                "id": url,
-                "title": url,
-                "url": url,
-            }
-            for url in urls
-        ]
+        entries = []
+        for url in urls:
+            is_lastfm = _is_lastfm_url(url)
+            normalized_url = (
+                url.replace("://last.fm", "://www.last.fm", 1)
+                if is_lastfm and "://last.fm" in url
+                else url
+            )
+            source = "lastfm" if is_lastfm else "url"
+            media_type = "lastfm" if is_lastfm else "url"
+            entries.append(
+                {
+                    "source": source,
+                    "media_type": media_type,
+                    "id": normalized_url,
+                    "title": normalized_url,
+                    "url": normalized_url,
+                }
+            )
         return await self.enqueue(entries)
 
     async def save_for_later(self, job_id: str | None = None, payload: dict | None = None):

@@ -45,6 +45,35 @@ const MEDIA_TYPES_BY_SOURCE = {
   soundcloud: ['track', 'playlist'],
 };
 
+const URL_REGEX = /((?:https?:\/\/)?(?:www\.)?[\w.-]+\.[a-z]{2,}(?:\/[^\s<>"']*)?)/gi;
+
+function normalizeUrlInput(raw = '') {
+  const trimmed = raw.trim().replace(/^[\[\(<>"'\s]+/, '').replace(/[\]\)>"',.;!\s]+$/, '');
+  if (!trimmed) return '';
+  const withScheme = /^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\//.test(trimmed)
+    ? trimmed
+    : `https://${trimmed.replace(/^\/+/, '')}`;
+  if (withScheme.startsWith('https://last.fm/')) {
+    return withScheme.replace('https://last.fm/', 'https://www.last.fm/');
+  }
+  if (withScheme.startsWith('http://last.fm/')) {
+    return withScheme.replace('http://last.fm/', 'http://www.last.fm/');
+  }
+  return withScheme;
+}
+
+function extractUrlsFromText(text = '') {
+  const matches = text.matchAll(URL_REGEX);
+  const urls = [];
+  for (const match of matches) {
+    const normalized = normalizeUrlInput(match[1]);
+    if (normalized && !urls.includes(normalized)) {
+      urls.push(normalized);
+    }
+  }
+  return urls;
+}
+
 function normalizePort(value) {
   const num = Number(value);
   return Number.isFinite(num) && num > 0 ? num : DEFAULT_APP_SETTINGS.port;
@@ -1907,8 +1936,8 @@ function handleQueueCompletion(prevQueue) {
 
 function toggleUrlButton() {
   if (!urlInput || !urlDownloadBtn) return;
-  const lines = (urlInput.value || '').split('\n').map((v) => v.trim()).filter(Boolean);
-  const hasUrls = lines.length > 0;
+  const urls = extractUrlsFromText(urlInput.value || '');
+  const hasUrls = urls.length > 0;
   urlDownloadBtn.disabled = !hasUrls;
   urlDownloadBtn.classList.toggle('hidden', !hasUrls);
   urlActions?.classList.toggle('hidden', !hasUrls);
@@ -1920,10 +1949,7 @@ if (urlInput) {
 
 if (urlDownloadBtn && urlInput) {
   urlDownloadBtn.addEventListener('click', async () => {
-    const urls = (urlInput.value || '')
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean);
+    const urls = extractUrlsFromText(urlInput.value || '');
     if (!urls.length) return;
     const previousIds = new Set(state.queue.map((item) => item.job_id));
     const res = await fetch('/api/url-downloads', {

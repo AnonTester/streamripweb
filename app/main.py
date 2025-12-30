@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 from contextlib import asynccontextmanager
@@ -297,15 +298,50 @@ async def start_download(payload: Dict[str, Any]):
 
 @app.post("/api/url-downloads")
 async def download_urls(payload: Dict[str, Any]):
-    urls = payload.get("urls")
-    if not isinstance(urls, list):
-        raise HTTPException(status_code=400, detail="urls must be a list of strings")
-    cleaned = [u.strip() for u in urls if isinstance(u, str) and u.strip()]
-    if not cleaned:
+    urls = _extract_urls(payload.get("urls"))
+    if not urls:
         raise HTTPException(status_code=400, detail="No valid URLs provided")
-    logger.info("URL download requested for %d url(s)", len(cleaned))
-    queue = await download_manager.enqueue_urls(cleaned)
+    logger.info("URL download requested for %d url(s)", len(urls))
+    queue = await download_manager.enqueue_urls(urls)
     return download_manager.queue_state()
+
+
+URL_PATTERN = re.compile(
+    r"((?:https?://)?(?:www\.)?[\w.-]+\.[a-z]{2,}(?:/[^\s<>\"']*)?)", re.IGNORECASE
+)
+
+
+def _normalize_url(raw: str) -> str:
+    value = raw.strip().strip("[]()<>\"' ,.;")
+    value = value.rstrip(".,;!")
+    if not value:
+        return ""
+    if not re.match(r"^[a-zA-Z][a-zA-Z0-9+\-.]*://", value):
+        value = f"https://{value.lstrip('/')}"
+    if value.startswith("https://last.fm/"):
+        value = value.replace("https://last.fm/", "https://www.last.fm/", 1)
+    elif value.startswith("http://last.fm/"):
+        value = value.replace("http://last.fm/", "http://www.last.fm/", 1)
+    return value
+
+
+def _extract_urls(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        raise HTTPException(status_code=400, detail="urls must be a list of strings")
+    seen: set[str] = set()
+    results: list[str] = []
+    for entry in values:
+        if not isinstance(entry, str):
+            continue
+        for match in URL_PATTERN.finditer(entry):
+            normalized = _normalize_url(match.group(1))
+            if not normalized:
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            results.append(normalized)
+    return results
 
 
 @app.get("/api/version")
