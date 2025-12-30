@@ -34,6 +34,8 @@ The application stores runtime data (such as saved items and cached version info
    ```
 
    The app depends on `streamrip`, `fastapi`, `uvicorn`, `jinja2`, and `sse-starlette`. If you prefer using the development branch of streamrip, uncomment the Git dependency noted in `requirements.txt`.
+   Also, make sure [ffmpeg](https://ffmpeg.org/download.html) is installed - it is used to convert downloaded tracks to different formats.
+
 
 ## Configuration
 
@@ -45,6 +47,33 @@ You can configure credentials and download preferences in two ways:
 - **From the CLI:** Run `streamrip configure` or edit the config file manually. Streamrip Web will reflect changes on reload.
 
 Any updates made in the UI are validated against streamrip’s dataclass-backed schema to avoid writing unexpected keys.
+
+## Authentication
+
+To authenticate a client, the `login` method of the `Client` must be used. This documents the parameters you need to pass for each source.
+
+### Qobuz
+
+- `email`: The email used for the account
+- `pwd`: The md5 hash of the account password.
+- (optional) `app_id`: If this is passed in, `QobuzClient` won't scrape it again.
+- (optional) `secrets`: If this is passed in, `QobuzClient` won't scrape it again.
+
+### TIDAL
+
+These are all fetched by the client, but can be passed in to save time.
+
+- `user_id`
+- `country_code`
+- `access_token`
+- `refresh_token`
+
+**Note**: Due to changes in Tidal authentication, streamrip needs to be patched with different client id/secret keys as described in this [streamrip bug report](https://github.com/nathom/streamrip/issues/896)
+
+### Deezer
+
+- `arl`: See [Finding your ARL](https://github.com/nathom/streamrip/wiki/Finding-Your-Deezer-ARL-Cookie)
+
 
 ## Startup
 

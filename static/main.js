@@ -1,3 +1,9 @@
+// Make app title clickable
+document.querySelector('.logo')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    window.location.href = '/';
+});
+
 function loadAppPrefs() {
   try {
     return JSON.parse(localStorage.getItem('appPrefs') || '{}');
@@ -14,6 +20,29 @@ const DEFAULT_APP_SETTINGS = {
   defaultSource: 'qobuz',
   debugLogging: false,
   port: 8500,
+};
+
+const SOURCE_LABELS = {
+  qobuz: 'Qobuz',
+  tidal: 'Tidal',
+  deezer: 'Deezer',
+  soundcloud: 'SoundCloud',
+};
+
+const SEARCH_SOURCE_OPTIONS = Object.entries(SOURCE_LABELS).map(([value, label]) => ({ value, label }));
+
+const MEDIA_TYPE_LABELS = {
+  album: 'Album',
+  artist: 'Artist',
+  playlist: 'Playlist',
+  track: 'Track',
+};
+
+const MEDIA_TYPES_BY_SOURCE = {
+  qobuz: ['album', 'artist', 'track', 'playlist'],
+  tidal: ['album', 'artist', 'track', 'playlist'],
+  deezer: ['album', 'artist', 'track', 'playlist'],
+  soundcloud: ['track', 'playlist'],
 };
 
 function normalizePort(value) {
@@ -53,6 +82,26 @@ const state = {
   activeSettingsTab: 'web',
   unsavedSettings: false,
 };
+
+function getSourceAvailability(config = state.config) {
+  const conf = config || {};
+  return {
+    qobuz: Boolean(conf?.qobuz?.password_or_token),
+    tidal: Boolean(conf?.tidal?.user_id),
+    deezer: Boolean(conf?.deezer?.arl),
+    soundcloud: true,
+  };
+}
+
+function getAvailableSources(config = state.config) {
+  const availability = getSourceAvailability(config);
+  return SEARCH_SOURCE_OPTIONS.filter((opt) => availability[opt.value]).map((opt) => opt.value);
+}
+
+function filterSourceOptions(options) {
+  const availability = getSourceAvailability();
+  return options.filter((opt) => opt.value === '' || availability[opt.value]);
+}
 
 function debugLog(...args) {
   if (state.appSettings?.debugLogging) {
@@ -248,7 +297,7 @@ const SETTINGS_SECTIONS = {
     id: 'conversion',
     title: 'Conversion',
     scope: 'config',
-    description: 'Transcode downloaded tracks.',
+    description: 'Transcode downloaded tracks. (Needs ffmpeg to be installed!)',
     fields: [
       {
         key: 'enabled',
@@ -643,6 +692,20 @@ Object.values(SETTINGS_SECTIONS).forEach((section) => {
   });
 });
 
+function getFieldDefinition(sectionId, key) {
+  const lookup = SETTINGS_FIELD_LOOKUP[`${sectionId}.${key}`];
+  if (!lookup) return null;
+  const field = { ...lookup };
+  if (field.type === 'select' && Array.isArray(field.options)) {
+    if (sectionId === 'app' && key === 'defaultSource') {
+      field.options = filterSourceOptions(field.options);
+    } else if (sectionId === 'lastfm' && (key === 'source' || key === 'fallback_source')) {
+      field.options = filterSourceOptions(field.options);
+    }
+  }
+  return field;
+}
+
 const tabs = document.querySelectorAll('.tab');
 const savedTabButton = document.querySelector('.tab[data-tab="saved"]');
 const savedTabPane = document.getElementById('tab-saved');
@@ -855,16 +918,63 @@ const urlDownloadBtn = document.getElementById('url-download-btn');
 const urlQueueCard = document.getElementById('url-queue-card');
 const urlActions = document.querySelector('.url-actions');
 
+function hasAvailableSearchProviders() {
+  return getAvailableSources().length > 0;
+}
+
+function syncMediaTypeOptions() {
+  if (!mediaTypeSelect) return;
+  const mediaTypes = MEDIA_TYPES_BY_SOURCE[state.currentSource] || [];
+  mediaTypeSelect.innerHTML = '';
+  mediaTypes.forEach((value) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = MEDIA_TYPE_LABELS[value] || value;
+    mediaTypeSelect.appendChild(option);
+  });
+  const nextMediaType = mediaTypes.includes(state.currentMediaType) ? state.currentMediaType : mediaTypes[0] || '';
+  state.currentMediaType = nextMediaType || '';
+  if (nextMediaType) {
+    mediaTypeSelect.value = nextMediaType;
+  } else {
+    mediaTypeSelect.selectedIndex = -1;
+  }
+  mediaTypeSelect.disabled = mediaTypes.length === 0;
+  updateColumnVisibility();
+}
+
+function syncSearchSources() {
+  if (!sourceSelect) return;
+  const availableOptions = SEARCH_SOURCE_OPTIONS.filter(({ value }) => getSourceAvailability()[value]);
+  sourceSelect.innerHTML = '';
+  availableOptions.forEach((opt) => {
+    const option = document.createElement('option');
+    option.value = opt.value;
+    option.textContent = opt.label;
+    sourceSelect.appendChild(option);
+  });
+  const availableValues = availableOptions.map((opt) => opt.value);
+  const candidateSources = [
+    state.currentSource,
+    state.appSettings.defaultSource,
+    DEFAULT_APP_SETTINGS.defaultSource,
+  ];
+  const nextSource = candidateSources.find((src) => availableValues.includes(src)) || availableValues[0] || '';
+  state.currentSource = nextSource;
+  if (nextSource) {
+    sourceSelect.value = nextSource;
+  } else {
+    sourceSelect.selectedIndex = -1;
+  }
+  const disableSearch = availableOptions.length === 0;
+  sourceSelect.disabled = disableSearch;
+  if (searchSubmitBtn) searchSubmitBtn.disabled = disableSearch;
+  if (queryInput) queryInput.disabled = disableSearch;
+  syncMediaTypeOptions();
+}
+
 function applyDefaultSource() {
-  if (state.appSettings.defaultSource && sourceSelect) {
-    sourceSelect.value = state.appSettings.defaultSource;
-  }
-  if (mediaTypeSelect) {
-    state.currentMediaType = mediaTypeSelect.value;
-  }
-  if (sourceSelect) {
-    state.currentSource = sourceSelect.value;
-  }
+  syncSearchSources();
 }
 
 applyDefaultSource();
@@ -872,12 +982,14 @@ applyDefaultSource();
 if (sourceSelect) {
   sourceSelect.addEventListener('change', () => {
     state.currentSource = sourceSelect.value;
+    syncMediaTypeOptions();
   });
 }
 
 if (mediaTypeSelect) {
   mediaTypeSelect.addEventListener('change', () => {
     state.currentMediaType = mediaTypeSelect.value;
+    updateColumnVisibility();
   });
 }
 
@@ -885,12 +997,13 @@ function setSearchLoading(isLoading, message = 'Fetching results…') {
   if (!searchLoadingBanner) return;
   searchLoadingBanner.classList.toggle('hidden', !isLoading);
   if (searchLoadingText) searchLoadingText.textContent = message;
+  const disableInputs = isLoading || !hasAvailableSearchProviders();
   if (searchSubmitBtn) {
-    searchSubmitBtn.disabled = isLoading;
+    searchSubmitBtn.disabled = disableInputs;
     searchSubmitBtn.textContent = isLoading ? 'Searching…' : 'Search';
   }
   searchForm.querySelectorAll('input, select, button').forEach((el) => {
-    el.disabled = isLoading;
+    el.disabled = disableInputs;
   });
   document.getElementById('results-card')?.classList.remove('hidden');
 }
@@ -902,6 +1015,18 @@ searchForm.addEventListener('submit', async (ev) => {
   payload.limit = Number(payload.limit || 25);
   state.currentSource = payload.source || sourceSelect?.value || state.currentSource;
   state.currentMediaType = payload.media_type || mediaTypeSelect?.value || state.currentMediaType;
+  const availableSources = getAvailableSources();
+  if (!hasAvailableSearchProviders() || !availableSources.includes(state.currentSource)) {
+    toast('No available search providers. Add credentials in Settings.', 'error');
+    return;
+  }
+  const allowedMediaTypes = MEDIA_TYPES_BY_SOURCE[state.currentSource] || [];
+  if (!allowedMediaTypes.includes(state.currentMediaType)) {
+    toast('Select a media type supported by the current source.', 'error');
+    return;
+  }
+  payload.source = state.currentSource;
+  payload.media_type = state.currentMediaType;
   updateColumnVisibility();
   state.lastQuery = payload.query;
   state.hasSearched = true;
@@ -1147,7 +1272,8 @@ function markSettingsDirty() {
 }
 
 function getFieldDisplayValue(section, field) {
-  const currentValues = field.scope === 'app' ? state.appSettings : state.config?.[section.id];
+  const scope = field.scope || section.scope;
+  const currentValues = scope === 'app' ? state.appSettings : state.config?.[section.id];
   const rawValue = currentValues ? currentValues[field.key] : undefined;
   if (Array.isArray(rawValue)) return rawValue.join('\n');
   if (typeof rawValue === 'boolean') return rawValue;
@@ -1196,7 +1322,7 @@ function createFieldControl(section, field) {
   control.dataset.settingsInput = 'true';
   control.dataset.section = section.id;
   control.dataset.key = field.key;
-  control.dataset.scope = field.scope;
+  control.dataset.scope = field.scope || section.scope;
   control.dataset.fieldType = field.type;
   if (field.required) control.dataset.required = 'true';
   if (field.allowNegativeOne) control.dataset.allowNegativeOne = 'true';
@@ -1249,7 +1375,10 @@ function buildSettingsSections() {
       const fields = document.createElement('div');
       fields.className = 'settings-fields';
       section.fields.forEach((field) => {
-        fields.appendChild(createFieldControl(section, field));
+        const fieldConfig = getFieldDefinition(section.id, field.key);
+        if (fieldConfig) {
+          fields.appendChild(createFieldControl(section, fieldConfig));
+        }
       });
       card.append(header, fields);
       panel.appendChild(card);
@@ -1290,7 +1419,7 @@ function collectSettingsData() {
     clearFieldError(input);
     const sectionId = input.dataset.section;
     const key = input.dataset.key;
-    const lookup = SETTINGS_FIELD_LOOKUP[`${sectionId}.${key}`];
+    const lookup = getFieldDefinition(sectionId, key);
     if (!lookup) return;
     const required = input.dataset.required === 'true';
     const allowNegativeOne = input.dataset.allowNegativeOne === 'true';
@@ -1504,6 +1633,7 @@ async function hydrateAppSettings() {
   if (!state.appSettings.defaultSource) {
     state.appSettings.defaultSource = DEFAULT_APP_SETTINGS.defaultSource;
   }
+  applyDefaultSource();
 }
 
 async function initializeSettingsState() {

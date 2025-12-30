@@ -33,7 +33,7 @@ def sse_response(generator, *, formatted: bool = False):
     return StreamingResponse(generator, media_type="text/event-stream")
 
 
-APP_VERSION = "0.6.4"
+APP_VERSION = "0.7.0"
 APP_REPO = os.getenv("STREAMRIP_WEB_REPO", "AnonTester/streamripweb")
 STREAMRIP_REPO = os.getenv("STREAMRIP_REPO", "nathom/streamrip")
 data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
@@ -45,6 +45,13 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("streamripweb")
+
+SOURCE_MEDIA_TYPES: dict[str, set[str]] = {
+    "qobuz": {"album", "artist", "track", "playlist"},
+    "tidal": {"album", "artist", "track", "playlist"},
+    "deezer": {"album", "artist", "track", "playlist"},
+    "soundcloud": {"track", "playlist"},
+}
 
 
 @asynccontextmanager
@@ -211,6 +218,15 @@ async def search(payload: Dict[str, Any]):
     media_type = payload["media_type"]
     query = payload["query"]
 
+    allowed_media_types = SOURCE_MEDIA_TYPES.get(source)
+    if allowed_media_types is None:
+        raise HTTPException(status_code=400, detail=f"Unsupported source: {source}")
+    if media_type not in allowed_media_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{media_type} search not available for {source}",
+        )
+
     logger.info(
         "Search requested | source=%s media_type=%s limit=%s query=%s",
         source,
@@ -223,6 +239,11 @@ async def search(payload: Dict[str, Any]):
     from streamrip.rip.main import Main
 
     config = config_manager.load()
+    if not _source_available(config, source):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{source} is unavailable due to missing credentials",
+        )
     results: List[Dict[str, Any]] = []
     downloaded_ids = _downloaded_ids_from_db(config.file) | set(
         download_manager.downloaded_ids()
@@ -318,6 +339,22 @@ def _downloaded_ids_from_db(config) -> set[str]:
         return {str(row[0]) for row in downloads_db.all()}
     except Exception:
         return set()
+
+
+def _source_available(config: Any, source: str) -> bool:
+    """Return True if the requested source has enough credentials to search."""
+    try:
+        file_config = config.file
+    except AttributeError:
+        return True
+
+    if source == "qobuz":
+        return bool(getattr(file_config.qobuz, "password_or_token", None))
+    if source == "tidal":
+        return bool(getattr(file_config.tidal, "user_id", None))
+    if source == "deezer":
+        return bool(getattr(file_config.deezer, "arl", None))
+    return True
 
 
 def _stringify_artist(value: Any) -> str | None:
