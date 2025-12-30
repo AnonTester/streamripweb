@@ -15,7 +15,7 @@ The application stores runtime data (such as saved items and cached version info
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com/nathom/streamripweb.git
+   git clone https://github.com/AnonTester/streamripweb.git
    cd streamripweb
    ```
 
@@ -77,13 +77,25 @@ These are all fetched by the client, but can be passed in to save time.
 
 ## Startup
 
-Launch the application with Uvicorn (default port 8500):
+Activate the virtual environment if used:
+```bash
+source .venv/bin/activate
+```
+
+then launch the application with Uvicorn (default port 8500):
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8500
 ```
 
+Or use the startup script:
+
+```bash
+python start.py
+```
+
 Then open http://localhost:8500/ in your browser. The server auto-creates the `data/` directory and refreshes version metadata at startup. To run with live reload during development, add the `--reload` flag to the Uvicorn command.
+
 
 ## Usage
 
