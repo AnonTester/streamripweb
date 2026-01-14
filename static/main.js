@@ -1146,6 +1146,13 @@ function buildQueueRow(item) {
   return div;
 }
 
+function pruneCompletedQueueItems(queue, activeJobIds) {
+  const activeIds = activeJobIds instanceof Set ? activeJobIds : new Set();
+  return (queue || []).filter(
+    (item) => !(item.status === 'completed' && item.downloaded && !activeIds.has(item.job_id)),
+  );
+}
+
 function renderQueue(queue, progressMap, history) {
   const prevQueue = state.queue || [];
   const incomingQueue = queue || state.queue;
@@ -1156,7 +1163,8 @@ function renderQueue(queue, progressMap, history) {
   if (history) {
     state.history = history;
   }
-  state.queue = incomingQueue;
+  const prunedQueue = pruneCompletedQueueItems(incomingQueue, state.activeQueueJobIds);
+  state.queue = prunedQueue;
   const hasQueue = state.queue.length > 0;
   if (hasQueue) {
     document.getElementById('results-card')?.classList.remove('hidden');
@@ -1917,6 +1925,8 @@ function handleQueueCompletion(prevQueue) {
       toggleUrlButton();
       urlQueueCard?.classList.add('hidden');
       state.activeQueueJobIds = new Set();
+      state.queue = pruneCompletedQueueItems(state.queue, state.activeQueueJobIds);
+      document.getElementById('view-queue').hidden = state.queue.length === 0;
     }
     return;
   }
@@ -1930,6 +1940,8 @@ function handleQueueCompletion(prevQueue) {
       renderResults(state.results);
       toast('All downloads completed successfully');
       state.activeQueueJobIds = new Set();
+      state.queue = pruneCompletedQueueItems(state.queue, state.activeQueueJobIds);
+      document.getElementById('view-queue').hidden = state.queue.length === 0;
     }
   }
 }
