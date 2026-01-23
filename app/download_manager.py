@@ -1123,10 +1123,18 @@ class DownloadManager:
         )
 
     async def abort(self, job_id: str):
-        if job_id not in self.queue:
-            return
-        item = self.queue[job_id]
-        item.status = "aborted"
+        async with self.lock:
+            item = self.queue.get(job_id)
+            if not item:
+                return
+            item.status = "aborted"
+            if job_id in self.order:
+                self.order.remove(job_id)
+            if job_id in self.display_order:
+                self.display_order.remove(job_id)
+            self.queue.pop(job_id, None)
+        self.progress_tap.latest_progress.pop(job_id, None)
+        self.progress_tap.job_totals.pop(job_id, None)
         logger.warning("Aborted job %s", job_id)
         await self.event_broker.publish(
             {"event": "queue", "data": self._queue_payload()}

@@ -104,9 +104,12 @@ const state = {
   hasSearched: false,
   currentSource: '',
   currentMediaType: '',
+  renderedSource: '',
+  renderedMediaType: '',
   activeTab: 'search',
   queueContext: 'search',
   activeQueueJobIds: new Set(),
+  abortedQueueJobIds: new Set(),
   requireDownloadFolder: Boolean(window.requireDownloadFolder),
   activeSettingsTab: 'web',
   unsavedSettings: false,
@@ -809,8 +812,10 @@ function updateColumnVisibility() {
     tracks: false,
     year: false,
   };
-  if (state.currentSource === 'deezer') {
-    switch (state.currentMediaType) {
+  const source = state.renderedSource || state.currentSource;
+  const mediaType = state.renderedMediaType || state.currentMediaType;
+  if (source === 'deezer') {
+    switch (mediaType) {
       case 'track':
         hideAll.tracks = true;
         hideAll.year = true;
@@ -969,7 +974,6 @@ function syncMediaTypeOptions() {
     mediaTypeSelect.selectedIndex = -1;
   }
   mediaTypeSelect.disabled = mediaTypes.length === 0;
-  updateColumnVisibility();
 }
 
 function syncSearchSources() {
@@ -1018,7 +1022,6 @@ if (sourceSelect) {
 if (mediaTypeSelect) {
   mediaTypeSelect.addEventListener('change', () => {
     state.currentMediaType = mediaTypeSelect.value;
-    updateColumnVisibility();
   });
 }
 
@@ -1071,6 +1074,8 @@ searchForm.addEventListener('submit', async (ev) => {
     }
     const data = await res.json();
     state.results = data.results || [];
+    state.renderedSource = state.currentSource;
+    state.renderedMediaType = state.currentMediaType;
     updateResultsWithHistory();
     renderResults(state.results);
     toast(`Loaded ${state.results.length} results`);
@@ -1146,11 +1151,17 @@ function buildQueueRow(item) {
   return div;
 }
 
-function pruneCompletedQueueItems(queue, activeJobIds) {
+function isQueueItemDownloaded(item, progressMap) {
+  const progress = progressMap ? progressMap[item.job_id] : null;
+  return Boolean(item.downloaded || progress?.summary?.all_downloaded);
+}
+
+function pruneCompletedQueueItems(queue, activeJobIds, progressMap) {
   const activeIds = activeJobIds instanceof Set ? activeJobIds : new Set();
-  return (queue || []).filter(
-    (item) => !(item.status === 'completed' && item.downloaded && !activeIds.has(item.job_id)),
-  );
+  return (queue || []).filter((item) => {
+    const downloaded = isQueueItemDownloaded(item, progressMap);
+    return !(item.status === 'completed' && downloaded && !activeIds.has(item.job_id));
+  });
 }
 
 function renderQueue(queue, progressMap, history) {
@@ -1163,8 +1174,8 @@ function renderQueue(queue, progressMap, history) {
   if (history) {
     state.history = history;
   }
-  const prunedQueue = pruneCompletedQueueItems(incomingQueue, state.activeQueueJobIds);
-  state.queue = prunedQueue;
+  const prunedQueue = pruneCompletedQueueItems(incomingQueue, state.activeQueueJobIds, state.progress);
+  state.queue = prunedQueue.filter((item) => !state.abortedQueueJobIds.has(item.job_id));
   const hasQueue = state.queue.length > 0;
   if (hasQueue) {
     document.getElementById('results-card')?.classList.remove('hidden');
@@ -1180,7 +1191,7 @@ function renderQueue(queue, progressMap, history) {
     const status = progress && !isTerminal
       ? 'in_progress'
       : item.status;
-    const downloaded = item.downloaded || Boolean(progress?.summary?.all_downloaded);
+    const downloaded = isQueueItemDownloaded(item, state.progress);
     const normalizedItem = { ...item, status, downloaded };
     if (downloaded) {
       resultsUpdated = markResultDownloadedByQueueItem(normalizedItem) || resultsUpdated;
@@ -1739,6 +1750,12 @@ document.querySelectorAll('[data-queue-list]').forEach((queueList) => {
     const jobId = ev.target.dataset.id;
     if (!action || !jobId) return;
     await fetch(`/api/queue/${jobId}/${action}`, { method: 'POST' });
+    if (action === 'abort') {
+      state.abortedQueueJobIds.add(jobId);
+      state.activeQueueJobIds.delete(jobId);
+      state.queue = state.queue.filter((item) => item.job_id !== jobId);
+      renderQueue(state.queue, state.progress, state.history);
+    }
   });
 });
 
@@ -1925,7 +1942,7 @@ function handleQueueCompletion(prevQueue) {
       toggleUrlButton();
       urlQueueCard?.classList.add('hidden');
       state.activeQueueJobIds = new Set();
-      state.queue = pruneCompletedQueueItems(state.queue, state.activeQueueJobIds);
+      state.queue = pruneCompletedQueueItems(state.queue, state.activeQueueJobIds, state.progress);
       document.getElementById('view-queue').hidden = state.queue.length === 0;
     }
     return;
@@ -1940,7 +1957,7 @@ function handleQueueCompletion(prevQueue) {
       renderResults(state.results);
       toast('All downloads completed successfully');
       state.activeQueueJobIds = new Set();
-      state.queue = pruneCompletedQueueItems(state.queue, state.activeQueueJobIds);
+      state.queue = pruneCompletedQueueItems(state.queue, state.activeQueueJobIds, state.progress);
       document.getElementById('view-queue').hidden = state.queue.length === 0;
     }
   }
@@ -1983,7 +2000,6 @@ if (urlDownloadBtn && urlInput) {
 }
 
 function connectSSE() {
-  const status = document.getElementById('sse-status');
   const source = new EventSource('/events/downloads');
 
   source.addEventListener('queue', (event) => {
@@ -2014,18 +2030,49 @@ function connectSSE() {
   });
 
   source.onerror = () => {
-    status.classList.add('error');
-    status.textContent = 'Offline';
+    setConnectionStatus(false);
     toast('SSE connection lost', 'error');
   };
 
   source.onopen = () => {
-    status.classList.remove('error');
-    status.textContent = 'Online';
+    setConnectionStatus(true);
     refreshQueue();
   };
 }
 
+function setConnectionStatus(isOnline) {
+  const status = document.getElementById('sse-status');
+  if (!status) return;
+  status.classList.toggle('error', !isOnline);
+  status.textContent = isOnline ? 'Online' : 'Offline';
+}
+
+async function checkOnlineStatus() {
+  const status = document.getElementById('sse-status');
+  if (!status) return;
+  status.classList.remove('error');
+  status.textContent = 'Checking...';
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 4000);
+  try {
+    const res = await fetch('/api/queue', { signal: controller.signal });
+    if (!res.ok) {
+      throw new Error(`Status check failed (${res.status})`);
+    }
+    const data = await res.json();
+    setConnectionStatus(true);
+    renderQueue(data.queue || [], data.progress, data.history);
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      console.error('Failed to check status', err);
+    }
+    setConnectionStatus(false);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+checkOnlineStatus();
 connectSSE();
 scheduleQueuePolling();
 
