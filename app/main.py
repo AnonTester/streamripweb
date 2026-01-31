@@ -34,7 +34,7 @@ def sse_response(generator, *, formatted: bool = False):
     return StreamingResponse(generator, media_type="text/event-stream")
 
 
-APP_VERSION = "0.8.2"
+APP_VERSION = "0.8.3"
 APP_REPO = os.getenv("STREAMRIP_WEB_REPO", "AnonTester/streamripweb")
 STREAMRIP_REPO = os.getenv("STREAMRIP_REPO", "nathom/streamrip")
 data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
@@ -249,30 +249,39 @@ async def search(payload: Dict[str, Any]):
     downloaded_ids = _downloaded_ids_from_db(config.file) | set(
         download_manager.downloaded_ids()
     )
-    async with Main(config) as main:
-        client = await main.get_logged_in_client(source)
-        logger.debug("Executing provider search with payload: %s", payload)
-        pages = await client.search(media_type, query, limit=limit)
-        logger.debug("Raw provider response pages: %s", pages)
-        if len(pages) == 0:
-            return {"results": []}
+    try:
+        async with Main(config) as main:
+            client = await main.get_logged_in_client(source)
+            logger.debug("Executing provider search with payload: %s", payload)
+            pages = await client.search(media_type, query, limit=limit)
+            logger.debug("Raw provider response pages: %s", pages)
+            if len(pages) == 0:
+                return {"results": []}
 
-        parsed = SearchResults.from_pages(source, media_type, pages)
-        # Acquire flattened items from the raw pages to preserve metadata columns
-        flattened: list[dict] = []
-        for page in pages:
-            flattened.extend(extract_items_from_page(page, source, media_type))
-        logger.debug("Flattened raw items extracted: %s", flattened)
+            parsed = SearchResults.from_pages(source, media_type, pages)
+            # Acquire flattened items from the raw pages to preserve metadata columns
+            flattened: list[dict] = []
+            for page in pages:
+                flattened.extend(extract_items_from_page(page, source, media_type))
+            logger.debug("Flattened raw items extracted: %s", flattened)
 
-        try:
-            downloaded_ids |= {str(row[0]) for row in main.database.downloads.all()}
-        except Exception:
-            pass
+            try:
+                downloaded_ids |= {str(row[0]) for row in main.database.downloads.all()}
+            except Exception:
+                pass
 
-        for summary, raw in zip(parsed.results, flattened):
-            entry = summarize_item(raw, summary, media_type, source)
-            entry["downloaded"] = str(summary.id) in downloaded_ids or download_manager.has_downloaded(entry["source"], entry["id"])
-            results.append(entry)
+            for summary, raw in zip(parsed.results, flattened):
+                entry = summarize_item(raw, summary, media_type, source)
+                entry["downloaded"] = str(summary.id) in downloaded_ids or download_manager.has_downloaded(entry["source"], entry["id"])
+                results.append(entry)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if _is_auth_error(exc):
+            logger.warning("Authentication failed during search for %s: %s", source, exc)
+            raise HTTPException(status_code=401, detail=_auth_error_detail(source)) from exc
+        logger.exception("Search failed for %s", source)
+        raise
 
     logger.info(
         "Search finished | source=%s media_type=%s query=%s results=%d",
@@ -391,6 +400,31 @@ def _source_available(config: Any, source: str) -> bool:
     if source == "deezer":
         return bool(getattr(file_config.deezer, "arl", None))
     return True
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    message = f"{exc}".lower()
+    if any(keyword in message for keyword in ("auth", "login", "credential", "token", "unauthorized", "forbidden", "arl")):
+        return True
+    exc_name = exc.__class__.__name__.lower()
+    return any(keyword in exc_name for keyword in ("auth", "login", "credential", "token", "unauthorized", "forbidden"))
+
+
+def _auth_error_detail(source: str) -> str:
+    source_label = {
+        "qobuz": "Qobuz",
+        "tidal": "Tidal",
+        "deezer": "Deezer",
+        "soundcloud": "SoundCloud",
+        "youtube": "YouTube",
+        "lastfm": "Last.fm",
+    }.get(source, source)
+    if source == "deezer":
+        return (
+            "Authentication failed for Deezer. "
+            "Update your ARL cookie in Settings > Sources > Deezer."
+        )
+    return f"Authentication failed for {source_label}. Update credentials in Settings > Sources > {source_label}."
 
 
 def _stringify_artist(value: Any) -> str | None:

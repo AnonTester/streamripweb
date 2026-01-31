@@ -610,6 +610,10 @@ const SETTINGS_SECTIONS = {
         label: 'ARL cookie',
         type: 'text',
         description: 'Authentication cookie for your Deezer account.',
+        helpLink: {
+          label: 'How to find your Deezer ARL cookie',
+          href: 'https://github.com/nathom/streamrip/wiki/Finding-Your-Deezer-ARL-Cookie',
+        },
       },
       {
         key: 'use_deezloader',
@@ -757,13 +761,91 @@ tabs.forEach((tab) => {
 });
 
 const toastContainer = document.getElementById('toast-container');
-function toast(message, tone = 'info') {
+function toast(message, tone = 'info', options = {}) {
   const el = document.createElement('div');
   el.className = 'toast';
-  el.textContent = message;
-  if (tone === 'error') el.style.borderColor = '#b91c1c';
+  if (tone === 'error') el.classList.add('is-error');
+  const content = document.createElement('div');
+  content.className = 'toast-content';
+  const messageEl = document.createElement('div');
+  messageEl.className = 'toast-message';
+  messageEl.textContent = message;
+  content.appendChild(messageEl);
+  if (options.actionLabel && typeof options.onAction === 'function') {
+    const action = document.createElement('a');
+    action.className = 'toast-action';
+    action.href = options.actionHref || '#';
+    action.textContent = options.actionLabel;
+    action.addEventListener('click', (event) => {
+      event.preventDefault();
+      options.onAction();
+    });
+    content.appendChild(action);
+  }
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'toast-dismiss';
+  close.setAttribute('aria-label', 'Dismiss notification');
+  close.textContent = 'x';
+  close.addEventListener('click', () => {
+    el.remove();
+  });
+  el.append(content, close);
   toastContainer.appendChild(el);
-  setTimeout(() => el.remove(), 4200);
+  if (!options.persistent) {
+    setTimeout(() => el.remove(), 4200);
+  }
+}
+
+function openSettingsForProvider(source) {
+  setActiveTab('settings');
+  setActiveSettingsTab('sources');
+  const target = document.querySelector(`[data-settings-section="${source}"]`);
+  if (!target) return;
+  target.classList.add('is-highlighted');
+  target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  setTimeout(() => target.classList.remove('is-highlighted'), 2400);
+}
+
+async function getErrorDetail(res) {
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    try {
+      const data = await res.json();
+      return data?.detail || data?.message || '';
+    } catch (err) {
+      return '';
+    }
+  }
+  try {
+    return (await res.text()) || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function isAuthError(detail, status) {
+  if (status === 401 || status === 403) return true;
+  if (!detail) return false;
+  const message = String(detail).toLowerCase();
+  return ['auth', 'login', 'credential', 'token', 'unauthorized', 'forbidden', 'arl'].some((hint) => message.includes(hint));
+}
+
+function showAuthErrorToast(source, detail) {
+  const label = SOURCE_LABELS[source] || source;
+  let message = detail?.trim();
+  if (source === 'deezer' && !(message || '').toLowerCase().includes('arl')) {
+    message = 'Deezer authentication failed. Update your ARL cookie in Settings > Sources > Deezer.';
+  }
+  if (!message) {
+    message = `Authentication failed for ${label}. Update credentials in Settings > Sources > ${label}.`;
+  }
+  toast(message, 'error', {
+    persistent: true,
+    actionLabel: `Open ${label} settings`,
+    actionHref: `#settings-section-${source}`,
+    onAction: () => openSettingsForProvider(source),
+  });
 }
 
 function normalizeArtist(artist) {
@@ -1070,7 +1152,14 @@ searchForm.addEventListener('submit', async (ev) => {
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
-      throw new Error(`Search failed (${res.status})`);
+      const detail = await getErrorDetail(res);
+      if (isAuthError(detail, res.status)) {
+        showAuthErrorToast(state.currentSource, detail);
+      } else {
+        const fallback = detail ? detail.trim() : '';
+        toast(fallback || `Search failed (${res.status}).`, 'error');
+      }
+      return;
     }
     const data = await res.json();
     state.results = data.results || [];
@@ -1388,7 +1477,20 @@ function createFieldControl(section, field) {
   });
   const description = document.createElement('div');
   description.className = 'help-text muted';
-  description.textContent = field.description || '';
+  if (field.description) {
+    description.textContent = field.description;
+  }
+  if (field.helpLink?.href && field.helpLink?.label) {
+    if (field.description) {
+      description.appendChild(document.createTextNode(' '));
+    }
+    const link = document.createElement('a');
+    link.href = field.helpLink.href;
+    link.textContent = field.helpLink.label;
+    link.target = '_blank';
+    link.rel = 'noreferrer noopener';
+    description.appendChild(link);
+  }
   if (field.type === 'checkbox') {
     wrapper.classList.add('is-checkbox');
     const row = document.createElement('div');
@@ -1417,6 +1519,8 @@ function buildSettingsSections() {
       if (!section) return;
       const card = document.createElement('div');
       card.className = 'settings-card';
+      card.dataset.settingsSection = section.id;
+      card.id = `settings-section-${section.id}`;
       const header = document.createElement('div');
       header.className = 'settings-card-header';
       header.innerHTML = `<div><h3>${section.title}</h3><p class="muted">${section.description}</p></div>`;
