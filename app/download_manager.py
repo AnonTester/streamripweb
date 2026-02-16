@@ -985,6 +985,8 @@ class DownloadManager:
                     }
                 )
                 self.progress_tap.finish_job(item.job_id)
+                if item.status == "completed":
+                    await self._drop_completed(item.job_id)
                 return
             except Exception as exc:  # noqa: BLE001
                 item.error = str(exc)
@@ -1009,6 +1011,16 @@ class DownloadManager:
         item.status = "failed"
         self.progress_tap.finish_job(item.job_id)
         logger.error("Job failed after retries | job_id=%s error=%s", item.job_id, item.error)
+        await self.event_broker.publish(
+            {"event": "queue", "data": self._queue_payload()}
+        )
+
+    async def _drop_completed(self, job_id: str):
+        async with self.lock:
+            self.queue.pop(job_id, None)
+            if job_id in self.display_order:
+                self.display_order.remove(job_id)
+        self.progress_tap.latest_progress.pop(job_id, None)
         await self.event_broker.publish(
             {"event": "queue", "data": self._queue_payload()}
         )

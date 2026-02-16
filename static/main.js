@@ -1853,11 +1853,31 @@ document.querySelectorAll('[data-queue-list]').forEach((queueList) => {
     const action = ev.target.dataset.action;
     const jobId = ev.target.dataset.id;
     if (!action || !jobId) return;
-    await fetch(`/api/queue/${jobId}/${action}`, { method: 'POST' });
+    const response = await fetch(`/api/queue/${jobId}/${action}`, { method: 'POST' });
+    if (!response.ok) {
+      toast(`Failed to ${action} item (${response.status}).`, 'error');
+      return;
+    }
+    const context = queueList.id === 'url-queue-list' ? 'url' : 'search';
+    if (action === 'retry' || action === 'force') {
+      state.activeQueueJobIds.add(jobId);
+      state.abortedQueueJobIds.delete(jobId);
+      state.queueContext = context;
+    }
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (err) {
+      data = null;
+    }
     if (action === 'abort') {
       state.abortedQueueJobIds.add(jobId);
       state.activeQueueJobIds.delete(jobId);
       state.queue = state.queue.filter((item) => item.job_id !== jobId);
+    }
+    if (data && (Array.isArray(data.queue) || data.progress || data.history)) {
+      renderQueue(data.queue || state.queue, data.progress, data.history);
+    } else if (action === 'abort') {
       renderQueue(state.queue, state.progress, state.history);
     }
   });
@@ -2022,20 +2042,24 @@ window.addEventListener('beforeunload', (event) => {
 
 function handleQueueCompletion(prevQueue) {
   const queueMap = new Map(state.queue.map((item) => [item.job_id, item]));
+  const prevQueueMap = new Map((prevQueue || []).map((item) => [item.job_id, item]));
   const activeJobs = Array.from(state.activeQueueJobIds || []);
   const activeItems = activeJobs
     .map((id) => queueMap.get(id))
     .filter(Boolean);
+  const hadActiveInPreviousQueue = activeJobs.some((id) => prevQueueMap.has(id));
+  const activeMissingFromQueue = activeJobs.length > 0 && hadActiveInPreviousQueue && activeItems.length === 0;
   const activeHasFailure = activeItems.some(
     (item) => ['failed', 'aborted', 'retrying'].includes(item.status) || !item.downloaded,
   );
   const activeAllDone = activeItems.length > 0 && activeItems.every((item) => item.downloaded);
+  const activeCompleted = (activeAllDone && !activeHasFailure) || activeMissingFromQueue;
 
   if (state.queueContext === 'url') {
     if (state.queue.length && activeJobs.length) {
       urlQueueCard?.classList.remove('hidden');
     }
-    if (activeAllDone && !activeHasFailure) {
+    if (activeCompleted) {
       toast('All URL downloads completed successfully');
       if (urlInput) {
         urlInput.value = '';
@@ -2055,7 +2079,7 @@ function handleQueueCompletion(prevQueue) {
   if (state.queueContext === 'search' && prevQueue.length > 0 && activeJobs.length > 0) {
     const resultsPanelEl = document.getElementById('results-panel');
     const queuePanelEl = document.getElementById('queue-panel');
-    if (activeAllDone && !activeHasFailure) {
+    if (activeCompleted) {
       queuePanelEl?.classList.add('hidden');
       resultsPanelEl?.classList.remove('hidden');
       renderResults(state.results);
