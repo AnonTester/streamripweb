@@ -1,8 +1,9 @@
-streamrip
+#streamrip
+git+https://github.com/nathom/streamrip.git@dev
+
 fastapi
 uvicorn
 jinja2
 sse-starlette
 packaging
 
-#git+https://github.com/nathom/streamrip.git@dev

@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apk add --no-cache ffmpeg
+RUN apk add --no-cache ffmpeg git
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt

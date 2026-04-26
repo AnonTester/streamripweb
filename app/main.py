@@ -34,7 +34,7 @@ def sse_response(generator, *, formatted: bool = False):
     return StreamingResponse(generator, media_type="text/event-stream")
 
 
-APP_VERSION = "0.8.5"
+APP_VERSION = "0.8.6"
 APP_REPO = os.getenv("STREAMRIP_WEB_REPO", "AnonTester/streamripweb")
 STREAMRIP_REPO = os.getenv("STREAMRIP_REPO", "nathom/streamrip")
 data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
@@ -568,29 +568,44 @@ async def get_version_data() -> dict:
 
     from streamrip import __version__ as streamrip_version
     streamrip_source, streamrip_commit = _streamrip_install_details()
+    app_local_commit = _local_app_commit()
+    app_latest = cache.get("app_latest")
+    streamrip_latest = cache.get("streamrip_latest")
+
+    app_update_available = bool(
+        app_local_commit and app_latest and app_latest != app_local_commit
+    )
+    if streamrip_source == "git":
+        streamrip_update_available = bool(
+            streamrip_commit and streamrip_latest and streamrip_commit != streamrip_latest
+        )
+    else:
+        streamrip_update_available = _release_update_available(
+            streamrip_version, streamrip_latest
+        )
 
     return {
         "checked_at": cache.get("checked_at"),
         "app": {
             "version": APP_VERSION,
-            "latest": cache.get("app_latest"),
+            "latest": app_latest,
             "repo": APP_REPO,
-            "update_available": bool(cache.get("app_update")),
-            "latest_label": _short_sha(cache.get("app_latest")) or cache.get("app_latest"),
+            "update_available": app_update_available,
+            "latest_label": _short_sha(app_latest) or app_latest,
         },
         "streamrip": {
             "version": streamrip_version,
-            "latest": cache.get("streamrip_latest"),
+            "latest": streamrip_latest,
             "latest_label": (
-                _short_sha(cache.get("streamrip_latest"))
+                _short_sha(streamrip_latest)
                 if streamrip_source == "git"
-                else cache.get("streamrip_latest")
+                else streamrip_latest
             ),
             "latest_url": cache.get("streamrip_latest_url"),
             "source": streamrip_source,
             "git_commit": _short_sha(streamrip_commit),
             "repo": STREAMRIP_REPO,
-            "update_available": bool(cache.get("streamrip_update")),
+            "update_available": streamrip_update_available,
         },
     }
 
@@ -625,6 +640,15 @@ def _short_sha(sha: str | None) -> str | None:
     if not sha:
         return None
     return sha[:7]
+
+
+def _release_update_available(installed: str | None, latest: str | None) -> bool:
+    if not installed or not latest:
+        return False
+    try:
+        return version.parse(latest) > version.parse(installed)
+    except Exception:
+        return False
 
 
 def _run_git_command(args: list[str], cwd: Path) -> str | None:
@@ -692,11 +716,7 @@ async def refresh_versions(force: bool, streamrip_version: str | None = None):
         tag, url = _latest_release(STREAMRIP_REPO)
         streamrip_latest = tag
         streamrip_latest_url = url
-        try:
-            if streamrip_version and tag:
-                streamrip_update = version.parse(tag) > version.parse(streamrip_version)
-        except Exception:
-            streamrip_update = False
+        streamrip_update = _release_update_available(streamrip_version, tag)
 
     cache = {
         "checked_at": now,
