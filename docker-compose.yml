@@ -1,0 +1,15 @@
+services:
+  streamripweb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: streamripweb:latest
+    container_name: streamripweb
+    ports:
+      - "8500:8500"
+    volumes:
+      - /opt/streamripweb:/app/data
+      - /media/music/other/deemix Music/:/download
+    environment:
+      - XDG_CONFIG_HOME=/app/data
+    restart: unless-stopped

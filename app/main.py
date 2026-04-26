@@ -34,7 +34,7 @@ def sse_response(generator, *, formatted: bool = False):
     return StreamingResponse(generator, media_type="text/event-stream")
 
 
-APP_VERSION = "0.8.4"
+APP_VERSION = "0.8.5"
 APP_REPO = os.getenv("STREAMRIP_WEB_REPO", "AnonTester/streamripweb")
 STREAMRIP_REPO = os.getenv("STREAMRIP_REPO", "nathom/streamrip")
 data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
@@ -89,8 +89,9 @@ async def index(request: Request):
     downloads_folder_missing = not bool(config_snapshot.get("downloads", {}).get("folder"))
     version_data = await get_version_data()
     return templates.TemplateResponse(
-        "index.html",
-        {
+        request=request,
+        name="index.html",
+        context={
             "request": request,
             "config": config_snapshot,
             "saved": download_manager.saved_items(),

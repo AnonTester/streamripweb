@@ -36,6 +36,53 @@ The application stores runtime data (such as saved items and cached version info
    The app depends on `streamrip`, `fastapi`, `uvicorn`, `jinja2`, and `sse-starlette`. If you prefer using the development branch of streamrip, uncomment the Git dependency noted in `requirements.txt`.
    Also, make sure [ffmpeg](https://ffmpeg.org/download.html) is installed - it is used to convert downloaded tracks to different formats.
 
+## Docker
+
+You can run Streamrip Web in Docker with either `docker compose` (recommended) or `docker run`.
+
+### Docker Compose (recommended)
+
+1. Review and edit the host volume paths in [`docker-compose.yml`](docker-compose.yml):
+
+   - `/opt/streamripweb:/app/data` stores persistent app data and streamrip config.
+   - `/media/music/other/deemix Music/:/download` is the output directory for downloads.
+
+2. Build and start:
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+3. Open the UI:
+
+   http://localhost:8500/
+
+4. In **Settings**, set the streamrip downloads folder to `/download` so downloads go to your mapped host directory.
+
+5. Useful commands:
+
+   ```bash
+   docker compose logs -f streamripweb
+   docker compose down
+   ```
+
+### Docker CLI (alternative)
+
+```bash
+docker build -t streamripweb:latest .
+
+docker run -d \
+  --name streamripweb \
+  -p 8500:8500 \
+  -e XDG_CONFIG_HOME=/app/data \
+  -v /opt/streamripweb:/app/data \
+  -v /path/to/your/music:/download \
+  --restart unless-stopped \
+  streamripweb:latest
+```
+
+Then open http://localhost:8500/.
+
 
 ## Configuration
 
