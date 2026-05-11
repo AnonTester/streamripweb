@@ -118,7 +118,12 @@ class ProgressTap:
     def _normalize_track_id(self, track_id: str | int | None) -> str | None:
         if track_id is None:
             return None
-        return str(track_id)
+        normalized = str(track_id)
+        if "|" in normalized:
+            candidate, remainder = normalized.split("|", 1)
+            if candidate and remainder.startswith(("http://", "https://")):
+                return candidate
+        return normalized
 
     def _patch(self):
         progress.get_progress_callback = self._patched_get_progress
@@ -440,7 +445,7 @@ class ProgressTap:
         track_id = (
             self._normalize_track_id(initial_track_ctx.get("track_id"))
             if initial_track_ctx
-            else desc
+            else self._normalize_track_id(desc)
         )
 
         def _update_totals(increment: int):
