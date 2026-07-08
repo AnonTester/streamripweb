@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ from typing import Any, Dict, List, Tuple
 from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from packaging import version
@@ -34,12 +35,67 @@ def sse_response(generator, *, formatted: bool = False):
     return StreamingResponse(generator, media_type="text/event-stream")
 
 
-APP_VERSION = "0.8.7"
+def _normalize_search_request(payload: Dict[str, Any]) -> Dict[str, Any]:
+    required = {"source", "media_type", "query"}
+    if not required.issubset(payload):
+        missing = required - set(payload.keys())
+        raise HTTPException(status_code=400, detail=f"Missing fields: {missing}")
+
+    try:
+        limit = int(payload.get("limit", 25))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="limit must be an integer") from exc
+
+    source = str(payload["source"])
+    media_type = str(payload["media_type"])
+    query = str(payload["query"])
+
+    allowed_media_types = SOURCE_MEDIA_TYPES.get(source)
+    if allowed_media_types is None:
+        raise HTTPException(status_code=400, detail=f"Unsupported source: {source}")
+    if media_type not in allowed_media_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{media_type} search not available for {source}",
+        )
+
+    return {
+        "source": source,
+        "media_type": media_type,
+        "query": query,
+        "limit": limit,
+    }
+
+
+def _encode_pending_search(payload: Dict[str, Any]) -> str:
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_pending_search(raw_cookie: str | None) -> Dict[str, Any] | None:
+    if not raw_cookie:
+        return None
+    try:
+        padding = "=" * (-len(raw_cookie) % 4)
+        decoded = base64.urlsafe_b64decode(f"{raw_cookie}{padding}".encode("ascii"))
+        payload = json.loads(decoded.decode("utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        return _normalize_search_request(payload)
+    except Exception:
+        logger.warning("Ignoring invalid pending search cookie")
+        return None
+
+
+APP_VERSION = "0.10.1"
 APP_REPO = os.getenv("STREAMRIP_WEB_REPO", "AnonTester/streamripweb")
 STREAMRIP_REPO = os.getenv("STREAMRIP_REPO", "nathom/streamrip")
 data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
 app_settings_path = os.path.join(data_dir, "app_settings.json")
 DEFAULT_PORT = 8500
+DEFAULT_DEEZER_YEAR_SEARCH_LIMIT = 25
+PENDING_SEARCH_COOKIE = "streamripweb_pending_search"
+PENDING_SEARCH_COOKIE_MAX_AGE = 60
 
 logging.basicConfig(
     level=logging.INFO,
@@ -88,7 +144,8 @@ async def index(request: Request):
     config_snapshot = config_manager.export()
     downloads_folder_missing = not bool(config_snapshot.get("downloads", {}).get("folder"))
     version_data = await get_version_data()
-    return templates.TemplateResponse(
+    initial_search = _decode_pending_search(request.cookies.get(PENDING_SEARCH_COOKIE))
+    response = templates.TemplateResponse(
         request=request,
         name="index.html",
         context={
@@ -99,11 +156,41 @@ async def index(request: Request):
             "versions": version_data,
             "app_settings": app.state.app_settings,
             "app_version": APP_VERSION,
+            "initial_search": initial_search,
             "config_created": config_manager.created_default_config,
             "require_download_folder": downloads_folder_missing
             or config_manager.created_default_config,
         },
     )
+    response.delete_cookie(PENDING_SEARCH_COOKIE, path="/")
+    return response
+
+
+@app.get("/search")
+async def search_redirect(
+    source: str,
+    media_type: str,
+    query: str,
+    limit: int = 25,
+):
+    search_request = _normalize_search_request(
+        {
+            "source": source,
+            "media_type": media_type,
+            "query": query,
+            "limit": limit,
+        }
+    )
+    response = RedirectResponse(url="/", status_code=303)
+    response.set_cookie(
+        key=PENDING_SEARCH_COOKIE,
+        value=_encode_pending_search(search_request),
+        max_age=PENDING_SEARCH_COOKIE_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return response
 
 
 @app.get("/events/downloads")
@@ -210,24 +297,11 @@ async def download_saved(payload: Dict[str, Any] | None = None):
 
 @app.post("/api/search")
 async def search(payload: Dict[str, Any]):
-    required = {"source", "media_type", "query"}
-    if not required.issubset(payload):
-        missing = required - set(payload.keys())
-        raise HTTPException(status_code=400, detail=f"Missing fields: {missing}")
-
-    limit = int(payload.get("limit", 25))
+    payload = _normalize_search_request(payload)
+    limit = payload["limit"]
     source = payload["source"]
     media_type = payload["media_type"]
     query = payload["query"]
-
-    allowed_media_types = SOURCE_MEDIA_TYPES.get(source)
-    if allowed_media_types is None:
-        raise HTTPException(status_code=400, detail=f"Unsupported source: {source}")
-    if media_type not in allowed_media_types:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{media_type} search not available for {source}",
-        )
 
     logger.info(
         "Search requested | source=%s media_type=%s limit=%s query=%s",
@@ -275,6 +349,12 @@ async def search(payload: Dict[str, Any]):
                 entry = summarize_item(raw, summary, media_type, source)
                 entry["downloaded"] = str(summary.id) in downloaded_ids or download_manager.has_downloaded(entry["source"], entry["id"])
                 results.append(entry)
+
+            if source == "deezer" and media_type in {"album", "track"}:
+                year_limit = app.state.app_settings.get(
+                    "deezerYearSearchLimit", DEFAULT_DEEZER_YEAR_SEARCH_LIMIT
+                )
+                await _enrich_deezer_years(client, results, media_type, year_limit)
     except HTTPException:
         raise
     except Exception as exc:
@@ -460,6 +540,37 @@ def _extract_year(value: Any) -> str | None:
     return None
 
 
+async def _enrich_deezer_years(
+    client: Any, results: List[Dict[str, Any]], media_type: str, limit: int
+) -> None:
+    """Deezer's search endpoints don't return release dates, so fetch each
+    result's metadata individually (concurrently, capped) to backfill the year.
+    """
+    targets = results if limit <= 0 else results[:limit]
+    if not targets:
+        return
+    api = client.client.api
+    semaphore = asyncio.Semaphore(8)
+
+    async def fetch_year(entry: Dict[str, Any]) -> None:
+        async with semaphore:
+            try:
+                getter = api.get_album if media_type == "album" else api.get_track
+                data = await asyncio.to_thread(getter, entry["id"])
+                year = _extract_year(data.get("release_date"))
+                if year:
+                    entry["year"] = year
+            except Exception:
+                logger.debug(
+                    "Deezer year lookup failed | media_type=%s id=%s",
+                    media_type,
+                    entry.get("id"),
+                    exc_info=True,
+                )
+
+    await asyncio.gather(*[fetch_year(entry) for entry in targets])
+
+
 def summarize_item(
     raw: dict, summary_obj: Any, media_type: str, source: str
 ) -> dict:
@@ -555,6 +666,16 @@ def _normalize_port(value: Any) -> int:
 def get_configured_port(settings: dict | None = None) -> int:
     source = settings if settings is not None else load_app_settings()
     return _normalize_port(source.get("port", DEFAULT_PORT))
+
+
+def _normalize_deezer_year_limit(value: Any) -> int:
+    try:
+        limit = int(value)
+        if limit >= 0:
+            return limit
+    except (TypeError, ValueError):
+        pass
+    return DEFAULT_DEEZER_YEAR_SEARCH_LIMIT
 
 
 async def get_version_data() -> dict:
@@ -734,6 +855,7 @@ def load_app_settings() -> dict:
         "defaultSource": "qobuz",
         "debugLogging": False,
         "port": DEFAULT_PORT,
+        "deezerYearSearchLimit": DEFAULT_DEEZER_YEAR_SEARCH_LIMIT,
     }
     try:
         with open(app_settings_path) as f:
@@ -742,13 +864,23 @@ def load_app_settings() -> dict:
         return defaults
     except json.JSONDecodeError:
         return defaults
-    return {**defaults, **saved, "port": _normalize_port(saved.get("port"))}
+    return {
+        **defaults,
+        **saved,
+        "port": _normalize_port(saved.get("port")),
+        "deezerYearSearchLimit": _normalize_deezer_year_limit(
+            saved.get("deezerYearSearchLimit")
+        ),
+    }
 
 
 def save_app_settings(payload: dict) -> dict:
     Path(app_settings_path).parent.mkdir(parents=True, exist_ok=True)
     merged = {**load_app_settings(), **payload}
     merged["port"] = _normalize_port(payload.get("port", merged.get("port")))
+    merged["deezerYearSearchLimit"] = _normalize_deezer_year_limit(
+        payload.get("deezerYearSearchLimit", merged.get("deezerYearSearchLimit"))
+    )
     with open(app_settings_path, "w") as f:
         json.dump(merged, f, indent=2)
     logger.info("Persisted app settings: %s", merged)

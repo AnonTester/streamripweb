@@ -104,6 +104,22 @@ header.header {
   color: var(--accent-contrast);
 }
 
+.tab-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.2);
+  color: var(--text);
+  font-size: 0.8em;
+  font-weight: 700;
+}
+
+.tabs .tab.active .tab-badge {
+  background: rgba(255, 255, 255, 0.3);
+  color: inherit;
+}
+
 main {
   margin-top: 18px;
   flex: 1;
@@ -323,6 +339,25 @@ tr.failed td { background: rgba(185, 28, 28, 0.08); }
   height: 100%;
   background: linear-gradient(90deg, var(--accent), #22c55e);
   width: 0%;
+}
+
+.track-progress-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.track-progress-item .progress-bar {
+  height: 6px;
+  margin-top: 2px;
+}
+
+.track-progress-title {
+  font-size: 0.85em;
 }
 
 .settings-grid {

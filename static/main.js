@@ -20,6 +20,7 @@ const DEFAULT_APP_SETTINGS = {
   defaultSource: 'qobuz',
   debugLogging: false,
   port: 8500,
+  deezerYearSearchLimit: 25,
 };
 
 const SOURCE_LABELS = {
@@ -158,7 +159,7 @@ const SETTINGS_GROUPS = {
   sources: {
     label: 'Sources',
     description: 'Provider-specific quality, authentication, and filtering options.',
-    sections: ['qobuz', 'qobuz_filters', 'tidal', 'deezer', 'soundcloud', 'youtube', 'lastfm'],
+    sections: ['qobuz', 'qobuz_filters', 'tidal', 'deezer', 'deezer_web', 'soundcloud', 'youtube', 'lastfm'],
   },
 };
 
@@ -629,6 +630,21 @@ const SETTINGS_SECTIONS = {
       },
     ],
   },
+  deezer_web: {
+    id: 'deezer_web',
+    title: 'Deezer search (StreamRIP Web)',
+    scope: 'app',
+    description: 'Deezer\'s search API does not return release years, so StreamRIP Web fetches them individually.',
+    fields: [
+      {
+        key: 'deezerYearSearchLimit',
+        label: 'Release year lookup limit',
+        type: 'number',
+        min: 0,
+        description: 'Number of top Deezer album/track results to fetch a release year for (one extra request each). 0 = no limit.',
+      },
+    ],
+  },
   soundcloud: {
     id: 'soundcloud',
     title: 'SoundCloud',
@@ -1026,6 +1042,7 @@ const searchForm = document.getElementById('search-form');
 const queryInput = document.getElementById('search-query');
 const sourceSelect = searchForm.querySelector('select[name="source"]');
 const mediaTypeSelect = searchForm.querySelector('select[name="media_type"]');
+const limitInput = searchForm.querySelector('input[name="limit"]');
 const searchLoadingBanner = document.getElementById('search-loading');
 const searchLoadingText = document.getElementById('search-loading-text');
 const searchSubmitBtn = searchForm.querySelector('button[type="submit"]');
@@ -1033,6 +1050,7 @@ const urlInput = document.getElementById('url-input');
 const urlDownloadBtn = document.getElementById('url-download-btn');
 const urlQueueCard = document.getElementById('url-queue-card');
 const urlActions = document.querySelector('.url-actions');
+let initialSearchHandled = false;
 
 function hasAvailableSearchProviders() {
   return getAvailableSources().length > 0;
@@ -1105,6 +1123,52 @@ if (mediaTypeSelect) {
   mediaTypeSelect.addEventListener('change', () => {
     state.currentMediaType = mediaTypeSelect.value;
   });
+}
+
+function runInitialSearchRequest() {
+  const pending = window.initialSearchRequest;
+  if (initialSearchHandled || !pending || requiresDownloadFolder()) return;
+  initialSearchHandled = true;
+  setActiveTab('search');
+
+  if (queryInput) {
+    queryInput.value = pending.query || '';
+  }
+  if (limitInput) {
+    const initialLimit = Number(pending.limit || 25);
+    limitInput.value = Number.isFinite(initialLimit) ? String(initialLimit) : '25';
+  }
+
+  const availableSources = getAvailableSources();
+  if (!availableSources.includes(pending.source)) {
+    const label = SOURCE_LABELS[pending.source] || pending.source;
+    toast(`${label} is not configured for search. Update credentials in Settings.`, 'error');
+    return;
+  }
+
+  state.currentSource = pending.source;
+  if (sourceSelect) {
+    sourceSelect.value = pending.source;
+  }
+  syncMediaTypeOptions();
+
+  const allowedMediaTypes = MEDIA_TYPES_BY_SOURCE[pending.source] || [];
+  if (!allowedMediaTypes.includes(pending.media_type)) {
+    toast(`Select a media type supported by ${SOURCE_LABELS[pending.source] || pending.source}.`, 'error');
+    return;
+  }
+
+  state.currentMediaType = pending.media_type;
+  if (mediaTypeSelect) {
+    mediaTypeSelect.value = pending.media_type;
+  }
+
+  if (!queryInput?.value.trim()) return;
+  if (typeof searchForm.requestSubmit === 'function') {
+    searchForm.requestSubmit();
+    return;
+  }
+  searchSubmitBtn?.click();
 }
 
 function setSearchLoading(isLoading, message = 'Fetching results…') {
@@ -1203,18 +1267,30 @@ function buildQueueRow(item) {
         : pct
           ? `${pct}%`
           : item.status.replace('_', ' ');
-  const trackProgress = progress?.progress || {};
-  const trackTotal = trackProgress.total || 0;
-  const trackReceived = trackProgress.received || 0;
-  const trackPct = trackTotal ? Math.min(100, Math.round((trackReceived / trackTotal) * 100)) : 0;
-  const trackEta = trackProgress.eta != null ? `${Math.max(0, Math.round(trackProgress.eta))}s` : '—';
-  const trackLabel = progress?.track?.title || trackProgress.desc || '—';
-  const trackStatus = trackProgress.status || (hasIssues ? 'Needs attention' : '—');
-  const trackMessage = trackProgress.message || '';
+  const tracksMap = progress?.tracks || {};
   const trackSummary = totalTracks
     ? `${downloadedTracks}/${totalTracks} downloaded${skippedTracks ? `, ${skippedTracks} skipped` : ''}${failedTracks ? `, ${failedTracks} failed` : ''}`
     : 'Waiting for track info';
   const disableActions = item.status === 'in_progress';
+  const activeTracks = Object.entries(tracksMap)
+    .filter(([, t]) => t.status === 'downloading')
+    .map(([trackId, t]) => ({ trackId, ...t }));
+  const activeTracksHtml = activeTracks.length
+    ? `<div class="track-progress-list">${activeTracks
+        .map((t) => {
+          const tPct = t.total ? Math.min(100, Math.round((t.received / t.total) * 100)) : 0;
+          const tEta = t.eta != null ? `${Math.max(0, Math.round(t.eta))}s` : '—';
+          return `
+            <div class="track-progress-item">
+              <div class="muted track-progress-title">${t.title || `Track ${t.trackId}`} · ${tPct}% · ETA ${tEta}</div>
+              <div class="progress-bar"><span style="width:${tPct}%;"></span></div>
+            </div>
+          `;
+        })
+        .join('')}</div>`
+    : item.status === 'in_progress'
+      ? '<div class="muted">Waiting for next track…</div>'
+      : '';
   const div = document.createElement('div');
   div.className = 'queue-item';
   div.innerHTML = `
@@ -1228,8 +1304,7 @@ function buildQueueRow(item) {
     <div class="muted">Tracks: ${trackSummary}</div>
     <div class="progress-bar"><span style="width:${pct}%;"></span></div>
     <div class="muted">Overall ETA: ${eta}</div>
-    <div class="muted">Track: ${trackLabel} · ${trackPct ? `${trackPct}%` : '—'} · ETA ${trackEta} · Status: ${trackStatus}${trackMessage ? ` (${trackMessage})` : ''}</div>
-    <div class="progress-bar"><span style="width:${trackPct}%;"></span></div>
+    ${activeTracksHtml}
     <div class="stack action-row">
       <button class="btn ghost" data-action="retry" data-id="${item.job_id}" ${disableActions ? 'disabled' : ''}>Retry</button>
       <button class="btn ghost" data-action="force" data-id="${item.job_id}" ${disableActions ? 'disabled' : ''}>Force re-download</button>
@@ -1290,6 +1365,16 @@ function renderQueue(queue, progressMap, history) {
     });
   });
   document.getElementById('view-queue').hidden = state.queue.length === 0;
+  document.getElementById('queue-tab-empty')?.classList.toggle('hidden', hasQueue);
+  const activeCount = state.queue.filter(
+    (item) => !['completed', 'failed', 'partial', 'aborted'].includes(item.status),
+  ).length;
+  const queueBadge = document.getElementById('queue-tab-badge');
+  if (queueBadge) {
+    queueBadge.textContent = String(activeCount);
+    queueBadge.classList.toggle('hidden', activeCount === 0);
+  }
+  renderQueueHistory();
   const historyUpdated = updateResultsWithHistory();
   if (resultsUpdated || historyUpdated) {
     renderResults(state.results);
@@ -1303,6 +1388,34 @@ function renderQueue(queue, progressMap, history) {
   if (!prevQueue.length && hasQueue) {
     refreshQueue();
   }
+}
+
+function renderQueueHistory() {
+  const list = document.getElementById('queue-history-list');
+  if (!list) return;
+  const entries = (state.history || [])
+    .filter((entry) => !entry.implicit)
+    .slice(-20)
+    .reverse();
+  document.getElementById('queue-history-empty')?.classList.toggle('hidden', entries.length > 0);
+  list.innerHTML = '';
+  entries.forEach((entry) => {
+    const row = document.createElement('div');
+    row.className = 'queue-item history-item';
+    const countsLabel = entry.album_count != null && entry.track_count != null
+      ? ` · ${entry.album_count} album${entry.album_count === 1 ? '' : 's'}, ${entry.track_count} track${entry.track_count === 1 ? '' : 's'} downloaded`
+      : '';
+    row.innerHTML = `
+      <div class="queue-header">
+        <div>
+          <strong>${entry.title || entry.id}</strong><div class="muted">${normalizeArtist(entry.artist) || ''}</div>
+        </div>
+        <div class="status completed">Completed</div>
+      </div>
+      <div class="muted">${SOURCE_LABELS[entry.source] || entry.source || ''}${entry.media_type ? ` · ${entry.media_type}` : ''}${countsLabel}</div>
+    `;
+    list.appendChild(row);
+  });
 }
 
 function renderSaved(saved) {
@@ -1810,7 +1923,13 @@ async function initializeSettingsState() {
 
 renderResults(state.results);
 renderSaved(state.saved);
-initializeSettingsState();
+
+async function bootInterface() {
+  await initializeSettingsState();
+  runInitialSearchRequest();
+}
+
+bootInterface();
 
 const resultsCard = document.getElementById('results-card');
 const queuePanel = document.getElementById('queue-panel');

@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List
 from urllib.parse import urlparse
 
 from streamrip import progress
-from streamrip.media import PendingSingle, PendingTrack
+from streamrip.media import Album, Artist, Label, PendingSingle, PendingTrack, Playlist
 from streamrip.media.track import Track, global_download_semaphore
 from streamrip.rip.main import Main
 
@@ -37,6 +37,37 @@ def _is_lastfm_url(url: str) -> bool:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
     return host == "www.last.fm" or host == "last.fm"
+
+
+def _describe_resolved_media(
+    media_obj: Any,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Extract (media_type, title, artist, source) from a resolved streamrip
+    Media object, so URL/last.fm queue items can be relabeled with the real
+    metadata instead of the raw URL once streamrip has resolved it.
+    """
+    if isinstance(media_obj, Album):
+        source = media_obj.tracks[0].client.source if media_obj.tracks else None
+        return "album", media_obj.meta.album, media_obj.meta.albumartist, source
+    if isinstance(media_obj, Track):
+        return (
+            "track",
+            media_obj.meta.title,
+            media_obj.meta.artist,
+            media_obj.downloadable.source,
+        )
+    if isinstance(media_obj, Playlist):
+        return "playlist", media_obj.name, None, media_obj.client.source
+    if isinstance(media_obj, Artist):
+        return "artist", media_obj.name, None, media_obj.client.source
+    if isinstance(media_obj, Label):
+        return "label", media_obj.name, None, media_obj.client.source
+    return None, None, None, None
+
+
+def _album_id(album_meta: Any) -> str | None:
+    album_id = getattr(getattr(album_meta, "info", None), "id", None)
+    return str(album_id) if album_id is not None else None
 
 
 @dataclass
@@ -200,6 +231,7 @@ class ProgressTap:
                 ),
                 "title": track.meta.title,
                 "album": getattr(track.meta.album, "album", None),
+                "album_id": _album_id(track.meta.album),
                 "tracknumber": track.meta.tracknumber,
                 "discnumber": track.meta.discnumber,
             }
@@ -286,6 +318,7 @@ class ProgressTap:
                 ),
                 "title": track.meta.title,
                 "album": getattr(track.meta.album, "album", None),
+                "album_id": _album_id(track.meta.album),
                 "tracknumber": track.meta.tracknumber,
                 "discnumber": track.meta.discnumber,
             }
@@ -314,6 +347,7 @@ class ProgressTap:
                 "track_id": tap._normalize_track_id(self_ref.meta.info.id),
                 "title": self_ref.meta.title,
                 "album": getattr(self_ref.meta.album, "album", None),
+                "album_id": _album_id(self_ref.meta.album),
                 "tracknumber": self_ref.meta.tracknumber,
                 "discnumber": self_ref.meta.discnumber,
             }
@@ -376,6 +410,7 @@ class ProgressTap:
                         "track_id": track_id,
                         "title": self_ref.meta.title,
                         "album": getattr(self_ref.meta.album, "album", None),
+                        "album_id": _album_id(self_ref.meta.album),
                         "tracknumber": self_ref.meta.tracknumber,
                         "discnumber": self_ref.meta.discnumber,
                     },
@@ -397,6 +432,7 @@ class ProgressTap:
                     "track_id": track_id,
                     "title": self_ref.meta.title,
                     "album": getattr(self_ref.meta.album, "album", None),
+                    "album_id": _album_id(self_ref.meta.album),
                     "tracknumber": self_ref.meta.tracknumber,
                     "discnumber": self_ref.meta.discnumber,
                 },
@@ -511,17 +547,37 @@ class ProgressTap:
         total = track_state.get("total") or 0
         return total if total > 0 else 1
 
+    def _track_eta(
+        self, track_state: dict[str, Any], job_started_at: float | None
+    ) -> float | None:
+        started = track_state.get("started_at", job_started_at or time.monotonic())
+        track_elapsed = max(time.monotonic() - started, 0.0001)
+        track_rate = track_state.get("received", 0) / track_elapsed
+        if track_rate <= 0:
+            return None
+        return (track_state.get("total", 0) - track_state.get("received", 0)) / track_rate
+
     def summarize_job(self, job_id: str) -> dict[str, Any]:
         state = self.job_totals.get(job_id) or {}
         tracks = state.get("tracks", {})
         counts = Counter(t.get("status", "unknown") for t in tracks.values())
         total_tracks = len(tracks)
+        albums: dict[str, str] = {}
+        for track_state in tracks.values():
+            if track_state.get("status") != "downloaded":
+                continue
+            ctx = track_state.get("track_ctx") or {}
+            album_id = ctx.get("album_id")
+            if album_id and album_id not in albums:
+                albums[album_id] = ctx.get("album") or album_id
         summary = {
             "counts": dict(counts),
             "total_tracks": total_tracks,
             "downloaded": counts.get("downloaded", 0),
             "failed": counts.get("failed", 0),
             "skipped": counts.get("skipped", 0),
+            "album_count": len(albums),
+            "albums": [{"id": aid, "title": title} for aid, title in albums.items()],
         }
         summary["all_downloaded"] = (
             total_tracks > 0 and summary["downloaded"] == total_tracks
@@ -550,19 +606,10 @@ class ProgressTap:
         )
         elapsed = max(time.monotonic() - state.get("started_at", time.monotonic()), 0.0001)
         overall_rate = received_sum / elapsed
-        track_elapsed = max(
-            time.monotonic() - track_state.get("started_at", state.get("started_at", time.monotonic())),
-            0.0001,
-        )
-        track_rate = track_state.get("received", 0) / track_elapsed
         eta_total = (
             (total_sum - received_sum) / overall_rate if overall_rate > 0 else None
         )
-        per_track_eta = (
-            (track_state.get("total", 0) - track_state.get("received", 0)) / track_rate
-            if track_rate > 0
-            else None
-        )
+        per_track_eta = self._track_eta(track_state, state.get("started_at"))
         summary = self.summarize_job(job_id)
         event_data = {
             "job_id": job_id,
@@ -588,6 +635,11 @@ class ProgressTap:
                     "status": ts.get("status"),
                     "message": ts.get("message"),
                     "title": ts.get("title"),
+                    "eta": (
+                        per_track_eta
+                        if tid == track_id
+                        else self._track_eta(ts, state.get("started_at"))
+                    ),
                 }
                 for tid, ts in state["tracks"].items()
             },
@@ -767,15 +819,17 @@ class DownloadHistoryStore:
             if key in seen:
                 continue
             seen.add(key)
-            new_items.append(
-                {
-                    "id": str(entry.get("id")),
-                    "source": entry.get("source"),
-                    "media_type": entry.get("media_type"),
-                    "title": entry.get("title"),
-                    "artist": entry.get("artist"),
-                }
-            )
+            new_entry = {
+                "id": str(entry.get("id")),
+                "source": entry.get("source"),
+                "media_type": entry.get("media_type"),
+                "title": entry.get("title"),
+                "artist": entry.get("artist"),
+            }
+            for optional_key in ("url", "track_count", "album_count", "implicit"):
+                if entry.get(optional_key) is not None:
+                    new_entry[optional_key] = entry[optional_key]
+            new_items.append(new_entry)
         if new_items:
             existing.extend(new_items)
             self._write(existing)
@@ -830,23 +884,47 @@ class DownloadManager:
             "history": self.history_snapshot(),
         }
 
-    def _record_download(self, item: QueueItem):
+    def _record_download(self, item: QueueItem, summary: Dict[str, Any] | None = None):
+        albums = (summary or {}).get("albums") or []
+        is_multi_album = item.media_type in ("artist", "label")
         key = (item.source, str(item.item_id))
-        if key in self.downloaded_index:
+        if key not in self.downloaded_index:
+            self.downloaded_index.add(key)
+            entry: Dict[str, Any] = {
+                "id": item.item_id,
+                "source": item.source,
+                "media_type": item.media_type,
+                "title": item.title,
+                "artist": item.artist,
+                "url": item.url,
+            }
+            if is_multi_album:
+                entry["track_count"] = (summary or {}).get("downloaded", 0)
+                entry["album_count"] = len(albums)
+            self.history_store.add([entry])
+
+        if not is_multi_album:
             return
-        self.downloaded_index.add(key)
-        self.history_store.add(
-            [
+        # Record each album individually (without surfacing it in the visible
+        # history list) so later searches correctly flag them as downloaded.
+        new_albums = []
+        for album in albums:
+            album_key = (item.source, str(album["id"]))
+            if album_key in self.downloaded_index:
+                continue
+            self.downloaded_index.add(album_key)
+            new_albums.append(
                 {
-                    "id": item.item_id,
+                    "id": album["id"],
                     "source": item.source,
-                    "media_type": item.media_type,
-                    "title": item.title,
+                    "media_type": "album",
+                    "title": album["title"],
                     "artist": item.artist,
-                    "url": item.url,
+                    "implicit": True,
                 }
-            ]
-        )
+            )
+        if new_albums:
+            self.history_store.add(new_albums)
 
     def _item_to_dict(self, item: QueueItem) -> dict:
         return {
@@ -962,7 +1040,7 @@ class DownloadManager:
                     item.status = "completed"
                     item.downloaded = True
                     item.force_no_db = False
-                    self._record_download(item)
+                    self._record_download(item, summary)
                 else:
                     item.status = "partial"
                     item.downloaded = False
@@ -1030,6 +1108,47 @@ class DownloadManager:
             {"event": "queue", "data": self._queue_payload()}
         )
 
+    async def _apply_resolved_metadata(
+        self, item: QueueItem, main: Main, pending_id: str | None = None
+    ) -> None:
+        """Backfill a URL/last.fm queue item's id/title/artist/source/media_type
+        from streamrip's resolved metadata, once available, so the queue and
+        history show real labels (and the real provider id, for duplicate
+        detection) instead of the raw URL.
+        """
+        if not main.media:
+            return
+        media_type, title, artist, source = _describe_resolved_media(main.media[0])
+        changed = False
+        if pending_id and item.item_id != pending_id:
+            item.item_id = pending_id
+            changed = True
+        if title and item.title != title:
+            item.title = title
+            changed = True
+        if artist != item.artist:
+            item.artist = artist
+            changed = True
+        if media_type and item.media_type != media_type:
+            item.media_type = media_type
+            changed = True
+        if source and item.source != source:
+            item.source = source
+            changed = True
+        if changed:
+            logger.info(
+                "Backfilled metadata for job %s | source=%s media_type=%s item_id=%s title=%s artist=%s",
+                item.job_id,
+                item.source,
+                item.media_type,
+                item.item_id,
+                item.title,
+                item.artist,
+            )
+            await self.event_broker.publish(
+                {"event": "queue", "data": self._queue_payload()}
+            )
+
     async def _run_streamrip(self, item: QueueItem):
         config = self.config_manager.load()
         # Force progress callbacks to emit for web UI without printing console status noise.
@@ -1043,6 +1162,7 @@ class DownloadManager:
                 "Bypassing downloads database for job %s (force_no_db enabled)",
                 item.job_id,
             )
+        is_generic_source = item.source in ("url", "lastfm")
         logger.debug(
             "Launching streamrip Main for job %s | source=%s media_type=%s item_id=%s",
             item.job_id,
@@ -1053,6 +1173,8 @@ class DownloadManager:
         async with Main(config) as main:
             if item.source == "lastfm" or item.media_type == "lastfm":
                 await main.resolve_lastfm(item.url or item.item_id)
+                if is_generic_source:
+                    await self._apply_resolved_metadata(item, main)
                 await main.rip()
                 return
             if item.media_type == "url" or item.source == "url":
@@ -1061,8 +1183,11 @@ class DownloadManager:
                 await main.add_all_by_id(
                     [(item.source, item.media_type, item.item_id)]
                 )
+            pending_id = main.pending[0].id if main.pending else None
             logger.debug("Resolved items for job %s; beginning rip", item.job_id)
             await main.resolve()
+            if is_generic_source:
+                await self._apply_resolved_metadata(item, main, pending_id)
             await main.rip()
 
     async def enqueue_urls(self, urls: list[str]):

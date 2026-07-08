@@ -21,6 +21,10 @@
   <nav class="tabs">
     <button class="tab active" data-tab="search">Search</button>
     <button class="tab" data-tab="url">URL</button>
+    <button class="tab" data-tab="queue">
+      Queue
+      <span class="tab-badge hidden" id="queue-tab-badge">0</span>
+    </button>
     <button class="tab" data-tab="saved">
       <span class="tab-label-full">Saved for later</span>
       <span class="tab-label-short">Later</span>
@@ -154,6 +158,29 @@
       </div>
     </section>
 
+    <section id="tab-queue" class="tab-pane">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2>Download queue</h2>
+            <p>All active downloads, regardless of how they were started. Always available here, even after a page reload or lost connection.</p>
+          </div>
+        </div>
+        <div id="queue-tab-empty" class="muted empty-state">Nothing in the queue right now.</div>
+        <div id="global-queue-list" class="stack" data-queue-list></div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2>Recently completed</h2>
+            <p>The most recent successful downloads.</p>
+          </div>
+        </div>
+        <div id="queue-history-empty" class="muted empty-state">No completed downloads yet.</div>
+        <div id="queue-history-list" class="stack"></div>
+      </div>
+    </section>
+
     <section id="tab-saved" class="tab-pane">
       <div class="card">
         <div class="card-header">
@@ -224,6 +251,7 @@
     window.initialAppSettings = {{ app_settings | tojson }};
     window.versionInfo = {{ versions | tojson }};
     window.appVersion = {{ app_version | tojson }};
+    window.initialSearchRequest = {{ initial_search | tojson }};
     window.requireDownloadFolder = {{ require_download_folder | tojson }};
   </script>
   <script src="/static/main.js?v={{ app_version }}"></script>
