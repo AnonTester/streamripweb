@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, List
 from urllib.parse import urlparse
 
 from streamrip import progress
+from streamrip.exceptions import AuthenticationError, MissingCredentialsError
 from streamrip.media import Album, Artist, Label, PendingSingle, PendingTrack, Playlist
 from streamrip.media.track import Track, global_download_semaphore
 from streamrip.rip.main import Main
@@ -31,6 +32,46 @@ def _stringify_artist(value: Any) -> str | None:
         parts = [_stringify_artist(v) for v in value]
         return ", ".join([p for p in parts if p])
     return str(value)
+
+
+_SERVICE_LABELS = {
+    "deezer": "Deezer",
+    "qobuz": "Qobuz",
+    "tidal": "Tidal",
+    "soundcloud": "SoundCloud",
+}
+
+
+def _service_key(source: str | None, url: str | None) -> str | None:
+    if source and source not in ("url", "lastfm"):
+        return source.lower()
+    host = (urlparse(url or "").hostname or "").lower()
+    return next((key for key in _SERVICE_LABELS if key in host), None)
+
+
+def _service_name(source: str | None, url: str | None) -> str:
+    key = _service_key(source, url)
+    return _SERVICE_LABELS.get(key, key.capitalize() if key else "the streaming service")
+
+
+def _describe_error(exc: BaseException, item: "QueueItem") -> str:
+    """Return a human-readable failure reason; many streamrip errors carry no message."""
+    service = _service_name(item.source, item.url or str(item.item_id))
+    if isinstance(exc, AuthenticationError):
+        return (
+            f"Login to {service} was rejected (credentials/token invalid or expired). "
+            "Check the credentials in Settings."
+        )
+    if isinstance(exc, MissingCredentialsError):
+        return f"No credentials configured for {service}. Add them in Settings."
+    detail = str(exc).strip()
+    name = type(exc).__name__
+    return f"{name}: {detail}" if detail else name
+
+
+def _is_fatal_error(exc: BaseException) -> bool:
+    """Errors that retrying cannot fix."""
+    return isinstance(exc, (AuthenticationError, MissingCredentialsError))
 
 
 def _is_lastfm_url(url: str) -> bool:
@@ -82,6 +123,7 @@ class QueueItem:
     status: str = "queued"
     attempts: int = 0
     error: str | None = None
+    auth_source: str | None = None
     downloaded: bool = False
     force_no_db: bool = False
 
@@ -938,6 +980,7 @@ class DownloadManager:
             "status": item.status,
             "attempts": item.attempts,
             "error": item.error,
+            "auth_source": item.auth_source,
             "downloaded": item.downloaded,
             "force_no_db": item.force_no_db,
         }
@@ -1017,6 +1060,7 @@ class DownloadManager:
     async def _process_item(self, item: QueueItem):
         item.status = "in_progress"
         item.error = None
+        item.auth_source = None
         self.progress_tap.start_job(item.job_id)
         await self.event_broker.publish(
             {"event": "queue", "data": self._queue_payload()}
@@ -1072,14 +1116,17 @@ class DownloadManager:
                     await self._drop_completed(item.job_id)
                 return
             except Exception as exc:  # noqa: BLE001
-                item.error = str(exc)
-                item.status = "retrying"
+                item.error = _describe_error(exc, item)
                 logger.exception(
                     "Error during download | job_id=%s attempt=%s error=%s",
                     item.job_id,
                     attempt + 1,
-                    exc,
+                    item.error,
                 )
+                if _is_fatal_error(exc):
+                    item.auth_source = _service_key(item.source, item.url or str(item.item_id))
+                    break
+                item.status = "retrying"
                 await self.event_broker.publish(
                     {
                         "event": "queue",
@@ -1241,12 +1288,29 @@ class DownloadManager:
             {"event": "saved", "data": self.saved_store.list()}
         )
 
+    async def retry_auth_failed(self, sources: Iterable[str]) -> list[str]:
+        """Re-queue jobs that failed on a login error for any of `sources`.
+
+        Called after the credentials of those services were changed.
+        """
+        wanted = {s.lower() for s in sources}
+        job_ids = [
+            jid
+            for jid, queued in self.queue.items()
+            if queued.status == "failed" and queued.auth_source in wanted
+        ]
+        for jid in job_ids:
+            logger.info("Auto-retrying job after credential update | job_id=%s", jid)
+            await self.retry(jid)
+        return job_ids
+
     async def retry(self, job_id: str, *, force_no_db: bool = False):
         if job_id not in self.queue:
             return
         item = self.queue[job_id]
         item.status = "queued"
         item.error = None
+        item.auth_source = None
         item.downloaded = False
         if force_no_db:
             item.force_no_db = True

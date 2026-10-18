@@ -1240,6 +1240,29 @@ searchForm.addEventListener('submit', async (ev) => {
   }
 });
 
+function escapeQueueText(text) {
+  const el = document.createElement('div');
+  el.textContent = String(text);
+  return el.innerHTML;
+}
+
+const authToastedSources = new Set();
+
+function notifyQueueAuthFailures(items) {
+  const failing = new Map();
+  (items || []).forEach((item) => {
+    if (item.auth_source && !failing.has(item.auth_source)) failing.set(item.auth_source, item.error);
+  });
+  authToastedSources.forEach((src) => {
+    if (!failing.has(src)) authToastedSources.delete(src);
+  });
+  failing.forEach((detail, src) => {
+    if (authToastedSources.has(src)) return;
+    authToastedSources.add(src);
+    showAuthErrorToast(src, detail);
+  });
+}
+
 function buildQueueRow(item) {
   const progress = state.progress[item.job_id];
   const overall = progress?.overall || { received: 0, total: 0 };
@@ -1270,7 +1293,9 @@ function buildQueueRow(item) {
   const tracksMap = progress?.tracks || {};
   const trackSummary = totalTracks
     ? `${downloadedTracks}/${totalTracks} downloaded${skippedTracks ? `, ${skippedTracks} skipped` : ''}${failedTracks ? `, ${failedTracks} failed` : ''}`
-    : 'Waiting for track info';
+    : item.status === 'failed'
+      ? 'No tracks processed'
+      : 'Waiting for track info';
   const disableActions = item.status === 'in_progress';
   const activeTracks = Object.entries(tracksMap)
     .filter(([, t]) => t.status === 'downloading')
@@ -1300,12 +1325,14 @@ function buildQueueRow(item) {
       </div>
       <div class="status ${item.status}">${statusLabel}</div>
     </div>
-    <div class="muted">Attempts: ${item.attempts || 0}${item.error ? ` · ${item.error}` : ''}${item.force_no_db ? ' · Forcing download (no DB)' : ''}</div>
+    <div class="muted">Attempts: ${item.attempts || 0}${item.force_no_db ? ' · Forcing download (no DB)' : ''}</div>
+    ${item.error ? `<div class="queue-error">${escapeQueueText(item.error)}</div>` : ''}
     <div class="muted">Tracks: ${trackSummary}</div>
     <div class="progress-bar"><span style="width:${pct}%;"></span></div>
     <div class="muted">Overall ETA: ${eta}</div>
     ${activeTracksHtml}
     <div class="stack action-row">
+      ${item.auth_source ? `<button class="btn" data-open-settings="${item.auth_source}">Open ${SOURCE_LABELS[item.auth_source] || item.auth_source} settings</button>` : ''}
       <button class="btn ghost" data-action="retry" data-id="${item.job_id}" ${disableActions ? 'disabled' : ''}>Retry</button>
       <button class="btn ghost" data-action="force" data-id="${item.job_id}" ${disableActions ? 'disabled' : ''}>Force re-download</button>
       <button class="btn ghost" data-action="save" data-id="${item.job_id}">Save for later</button>
@@ -1969,6 +1996,11 @@ viewQueueBtn.addEventListener('click', () => {
 
 document.querySelectorAll('[data-queue-list]').forEach((queueList) => {
   queueList.addEventListener('click', async (ev) => {
+    const settingsSource = ev.target.dataset.openSettings;
+    if (settingsSource) {
+      openSettingsForProvider(settingsSource);
+      return;
+    }
     const action = ev.target.dataset.action;
     const jobId = ev.target.dataset.id;
     if (!action || !jobId) return;
@@ -2255,6 +2287,7 @@ function connectSSE() {
     debugLog('SSE queue event', data);
     renderQueue(data.queue || data, data.progress, data.history);
     const queueItems = data.queue || data;
+    notifyQueueAuthFailures(queueItems);
     const ids = new Set((queueItems || []).map((item) => item.job_id));
     Object.keys(state.progress).forEach((jobId) => {
       if (!ids.has(jobId)) delete state.progress[jobId];

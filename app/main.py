@@ -87,7 +87,7 @@ def _decode_pending_search(raw_cookie: str | None) -> Dict[str, Any] | None:
         return None
 
 
-APP_VERSION = "0.10.1"
+APP_VERSION = "0.11.1"
 APP_REPO = os.getenv("STREAMRIP_WEB_REPO", "AnonTester/streamripweb")
 STREAMRIP_REPO = os.getenv("STREAMRIP_REPO", "nathom/streamrip")
 data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
@@ -217,7 +217,9 @@ async def get_config():
 @app.post("/api/config")
 async def update_config(payload: Dict[str, Dict[str, Any]]):
     logger.info("Applying configuration updates for sections: %s", list(payload))
-    return config_manager.update(payload)
+    updated = config_manager.update(payload)
+    await download_manager.retry_auth_failed(payload.keys())
+    return updated
 
 
 @app.get("/api/app-settings")
